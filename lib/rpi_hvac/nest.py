@@ -29,7 +29,7 @@ from ds_tools.core.filesystem import get_user_cache_dir
 from ds_tools.input import get_input
 from requests_client import RequestsClient, USER_AGENT_CHROME
 from tz_aware_dt import datetime_with_tz, localize, format_duration, TZ_LOCAL, now, TZ_UTC
-from .utils import celsius_to_fahrenheit as c2f, fahrenheit_to_celsius as f2c
+from .utils import celsius_to_fahrenheit as c2f, fahrenheit_to_celsius as f2c, secs_to_wall
 
 __all__ = ['NestWebClient']
 log = logging.getLogger(__name__)
@@ -518,6 +518,13 @@ class NestWebClient(RequestsClient):
             }
         return schedule
 
+    def _get_schedule(self):
+        schedule_info = self.app_launch(['schedule'])[self.serial]['schedule']
+        schedule = {}
+        for day, day_schedule in sorted(schedule_info['days'].items()):
+            schedule[int(day)] = [entry for i, entry in sorted(day_schedule.items())]
+        return schedule
+
     def update_schedule(self, days: Dict[str, Dict[str, Dict[str, Any]]]):
         # This has not yet been tested
         current = self._app_launch(['schedule'])['updated_buckets'][0]
@@ -527,16 +534,6 @@ class NestWebClient(RequestsClient):
         payload = {'objects': [{'object_key': f'schedule.{self.serial}', 'op': 'OVERWRITE', 'value': value}]}
         with self.transport_url():
             return self.post('v5/put', json=payload)
-
-
-def secs_to_wall(seconds: int):
-    hour, minute = divmod(seconds // 60, 60)
-    return f'{hour:02d}:{minute:02d}'
-
-
-def wall_to_secs(wall: str):
-    hour, minute = map(int, wall.split(':'))
-    return (hour * 60 + minute) * 60
 
 
 class SessionExpired(Exception):

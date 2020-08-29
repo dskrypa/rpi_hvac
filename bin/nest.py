@@ -9,6 +9,7 @@ import _venv  # This will activate the venv, if it exists and is not already act
 
 import logging
 from collections import defaultdict
+from typing import Dict, Any
 
 sys.path.append(PROJECT_ROOT.joinpath('lib').as_posix())
 from ds_tools.__version__ import __author_email__, __version__
@@ -16,7 +17,9 @@ from ds_tools.argparsing import ArgParser
 from ds_tools.core import wrap_main
 from ds_tools.logging import init_logging
 from ds_tools.output import Printer, SimpleColumn, Table
+from rpi_hvac.cron import NestCronSchedule
 from rpi_hvac.nest import NestWebClient, DEFAULT_CONFIG_PATH
+from rpi_hvac.utils import fahrenheit_to_celsius
 
 log = logging.getLogger(__name__)
 SHOW_ITEMS = ('energy', 'weather', 'buckets', 'bucket_names', 'schedule')
@@ -51,6 +54,19 @@ def parser():
     show_parser.add_argument('--format', '-f', choices=Printer.formats, help='Output format')
     show_parser.add_argument('--unit', '-u', nargs='?', default='f', choices=('f', 'c'), help='Unit (Celsius or Fahrenheit) for functions that support it')
     show_parser.add_argument('--raw', '-r', action='store_true', help='Show the full raw response instead of the processed response (only applies to item=buckets)')
+
+    # schd_parser = parser.add_subparser('action', 'schedule', 'Update the schedule')
+    # schd_add = schd_parser.add_subparser('sub_action', 'add', 'Add entries with the specified schedule')
+    # schd_add.add_argument('cron', help='Cron-format schedule to use')
+    # schd_add.add_argument('temp', type=float, help='The temperature to set at the specified time')
+    # schd_add.add_argument('unit', nargs='?', default='f', choices=('f', 'c'), help='Unit (Celsius or Fahrenheit)')
+    #
+    # schd_rem = schd_parser.add_subparser('sub_action', 'remove', 'Remove entries with the specified schedule')
+    # schd_rem.add_argument('cron', help='Cron-format schedule to use')
+    # schd_rem.add_constant('temp', None)
+    # schd_rem.add_constant('unit', None)
+    #
+    # schd_parser.add_common_arg('--dry_run', '-D', action='store_true', help='Print actions that would be taken instead of taking them')
 
     parser.add_common_arg('--config', '-c', metavar='PATH', default=DEFAULT_CONFIG_PATH, help='Config file location')
     parser.add_common_arg('--reauth', '-A', action='store_true', help='Force re-authentication, even if a cached session exists')
@@ -97,6 +113,14 @@ def main():
             raise ValueError(f'Unexpected {item=!r}')
 
         Printer(args.format or 'yaml').pprint(data)
+    elif action == 'schedule':
+        old = nest._get_schedule()
+        new = prepare_schedule(old, args.sub_action, args.cron, args.temp, args.unit)
+        if args.dry_run:
+            log.info('[DRY RUN] Would update schedule:')
+            Printer('json-pretty').pprint(new)
+        else:
+            nest.update_schedule(new)
     else:
         raise ValueError(f'Unexpected {action=!r}')
 
@@ -118,6 +142,29 @@ def show_schedule(schedule, output_format):
         table.print_rows(rows)
     else:
         Printer(output_format).pprint(schedule, sort_keys=False)
+
+
+def prepare_schedule(current, action, cron, temp, unit) -> Dict[str, Dict[str, Dict[str, Any]]]:
+    cron = NestCronSchedule.from_cron(cron)
+    if action == 'remove':
+        for dow, tod_seconds in cron:
+            if dow_current := current.get(dow):
+                rm_row = None
+                for i, row in enumerate(dow_current):
+                    if row['time'] == tod_seconds:
+                        rm_row = i
+                        break
+                if rm_row is not None:
+                    del dow_current[rm_row]
+    elif action == 'add':
+        temp = fahrenheit_to_celsius(temp) if unit == 'f' else temp
+        for dow, tod_seconds in cron:
+            # TODO: Figure out where to insert
+            pass
+    else:
+        raise ValueError(f'Unexpected {action=!r}')
+
+    # TODO: Reformat into the expected POST format
 
 
 if __name__ == '__main__':
