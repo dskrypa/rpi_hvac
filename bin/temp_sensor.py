@@ -7,18 +7,14 @@ Flask server for providing temperature and humidity info
 
 import argparse
 import logging
-import signal
+import platform
 import socket
 import sys
 import traceback
-import uuid
 from pathlib import Path
 
 import Adafruit_DHT as dht
-import eventlet
 from flask import Flask, request, Response, jsonify
-from flask_socketio import SocketIO
-from requests import Session
 from werkzeug.http import HTTP_STATUS_CODES as codes
 
 flask_dir = Path(__file__).resolve().parent
@@ -35,16 +31,29 @@ app = Flask(__name__)
 app.config.update(PROPAGATE_EXCEPTIONS=True, JSONIFY_PRETTYPRINT_REGULAR=True)
 
 
-@app.route('/shutdown', methods=['POST'])
-def shutdown_server():
-    user_ip = request.environ.get('REMOTE_ADDR')
-    data = request.get_json()
-    if data.get('password') == shutdown_pw:
-        log.info('Stopping server...')
-        socketio.stop()
+def main():
+    parser = argparse.ArgumentParser('Temp Sensor Flask Server')
+    parser.add_argument('--use_hostname', '-u', action='store_true', help='Use hostname instead of localhost/127.0.0.1')
+    parser.add_argument('--port', '-p', type=int, help='Port to use', required=True)
+    parser.add_argument('--verbose', '-v', action='count',
+                        help='Print more verbose log info (may be specified multiple times to increase verbosity)')
+    args = parser.parse_args()
+    init_logging(args.verbose, names=None, log_path=None)
+
+    flask_logger = logging.getLogger('flask.app')
+    for handler in logging.getLogger().handlers:
+        if handler.name == 'stderr':
+            flask_logger.addHandler(handler)
+            break
+
+    if platform.system() == 'Windows':
+        from ds_tools.flasks.socketio_server import SocketIOServer as Server
     else:
-        log.info('Rejecting unauthorized stop request from {}'.format(user_ip))
-        return Response(status=403)
+        from ds_tools.flasks.gunicorn_server import GunicornServer as Server
+
+    host = socket.gethostname() if args.use_hostname else None
+    server = Server(app, args.port, host)
+    server.start_server()
 
 
 @app.route('/read')
@@ -79,65 +88,8 @@ def handle_response_exception(err):
     return err.as_response()
 
 
-def start_server(run_args):
-    log.info('Starting Flask server on port={}'.format(run_args['port']))
-    global socketio, shutdown_pw, server_port
-    server_port = run_args['port']
-    shutdown_pw = str(uuid.uuid4())
-    socketio = SocketIO(app, async_mode='eventlet')
-    socketio.run(app, **run_args)
-
-
-def stop_server():
-    with Session() as session:
-        log.info('Telling local server to shutdown...')
-        try:
-            resp = session.post(
-                'http://localhost:{}/shutdown'.format(server_port), json={'password': shutdown_pw}, timeout=1
-            )
-        except Exception as e:
-            log.debug('Shutdown request timed out (this is expected)')
-        else:
-            log.debug('Shutdown response: {} - {}'.format(resp, resp.text))
-
-
-def stop_everything():
-    global stopped
-    if not stopped:
-        stop_server()
-        stopped = True
-
-
-def handle_signals(sig_num=None, frame=None):
-    log.info('Caught signal {} - shutting down'.format(sig_num))
-    stop_everything()
-    sys.exit(0)
-
-
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser('Temp Sensor Flask Server')
-    parser.add_argument('--use_hostname', '-u', action='store_true', help='Use hostname instead of localhost/127.0.0.1')
-    parser.add_argument('--port', '-p', type=int, help='Port to use', required=True)
-    parser.add_argument('--verbose', '-v', action='count', help='Print more verbose log info (may be specified multiple times to increase verbosity)')
-    args = parser.parse_args()
-    init_logging(args.verbose, names=None, log_path=None)
-
-    flask_logger = logging.getLogger('flask.app')
-    for handler in logging.getLogger().handlers:
-        if handler.name == 'stderr':
-            flask_logger.addHandler(handler)
-            break
-
-    run_args = {'port': args.port}
-    if args.use_hostname:
-        run_args['host'] = socket.gethostname()
-
-    signal.signal(signal.SIGTERM, handle_signals)
-    signal.signal(signal.SIGINT, handle_signals)
-
     try:
-        start_server(run_args)
-        # app.run(**run_args)
-    except Exception as e:
-        log.debug(traceback.format_exc())
-        log.error(e)
+        main()
+    except KeyboardInterrupt:
+        print()

@@ -4,15 +4,18 @@ Library for interacting with the Nest thermostat via the cloud API
 :author: Doug Skrypa
 """
 
+import json
 import logging
 import time
 from collections import defaultdict
-from configparser import ConfigParser
+from configparser import ConfigParser, NoSectionError
 from contextlib import contextmanager
 from datetime import datetime
+from functools import cached_property
 from getpass import getpass
 from pathlib import Path
 from threading import RLock
+from typing import List
 from urllib.parse import urlparse
 
 try:
@@ -20,93 +23,189 @@ try:
 except ImportError:
     keyring = None
 
-from requests_client import RequestsClient
+from ds_tools.input import get_input
+from requests_client import RequestsClient, USER_AGENT_CHROME
 from tz_aware_dt import datetime_with_tz, localize, format_duration, TZ_LOCAL
-from .utils import get_input, celsius_to_fahrenheit as c2f, fahrenheit_to_celsius as f2c
+from .utils import celsius_to_fahrenheit as c2f, fahrenheit_to_celsius as f2c
 
 __all__ = ['NestWebClient']
 log = logging.getLogger(__name__)
 
+DEFAULT_CONFIG_PATH = '~/.config/nest.cfg'
+JWT_URL = 'https://nestauthproxyservice-pa.googleapis.com/v1/issue_jwt'
+KEYRING_URL = 'https://pypi.org/project/keyring/'
+NEST_API_KEY = 'AIzaSyAdkSIMNc51XGNEAYWasX9UOWkS5P6sZE4'  # public key from Nest's website
+NEST_URL = 'https://home.nest.com'
+OAUTH_URL = 'https://accounts.google.com/o/oauth2/iframerpc'
+
 
 class NestWebClient(RequestsClient):
-    def __init__(self, email=None, serial=None, no_store_prompt=False, update_password=False):
+    def __init__(self, email=None, serial=None, no_store_prompt=False, update_password=False, config_path=None):
         """
         :param str email: The email address to be used for login
         :param str serial: The serial number of the thermostat to be managed by this client
         :param bool no_store_prompt: Do not prompt to store the password securely
         :param bool update_password: Prompt to update the stored password, even if one already exists
+        :param str config_path: The config path to use
         """
-        super().__init__('https://home.nest.com')
-        if email is None or serial is None:
-            cfg_path = Path('~/.config/nest.cfg').expanduser()
-            if cfg_path.exists():
-                config = ConfigParser()
-                with cfg_path.open('r', encoding='utf-8') as f:
-                    config.read_file(f)
-                email = email or config['credentials'].get('email')
-                serial = serial or config['device'].get('serial')
-        if email is None:
-            raise ValueError('An email address associated with a Nest account is required')
+        super().__init__(NEST_URL, user_agent_fmt=USER_AGENT_CHROME, headers={'Referer': NEST_URL})
+        self._lock = RLock()
+        self._config_path = Path(config_path or DEFAULT_CONFIG_PATH).expanduser()
+        self._no_store_pw = no_store_prompt
+        self._update_pw = update_password
+        self._email = self._get_config('credentials', 'email', 'email address', email, required=True)
+        self._session_info = None
+        self._session_expiry = None
+        self._userid = None
+        self._nest_host_port = ('home.nest.com', None)
+        self.serial = self._get_config('device', 'serial', 'thermostat serial number', serial)
+
+    @cached_property
+    def _config(self) -> ConfigParser:
+        config = ConfigParser()
+        if self._config_path.exists():
+            with self._config_path.open('r', encoding='utf-8') as f:
+                config.read_file(f)
+        return config
+
+    def _get_config(self, section, key, name=None, new_value=None, save=False, required=False):
+        name = name or key
+        cfg_value = self._config.get(section, key)
+        if cfg_value and new_value:
+            msg = f'Found {name}={cfg_value!r} in {self._config_path} - overwrite with {name}={new_value!r}?'
+            if get_input(msg, skip=save):
+                self._set_config(section, key, new_value)
+        elif required and not cfg_value and not new_value:
+            try:
+                new_value = input(f'Please enter your Nest {name}: ').strip()
+            except EOFError as e:
+                raise RuntimeError('Unable to read stdin (this is often caused by piped input)') from e
+            if not new_value:
+                raise ValueError(f'Invalid {name}')
+            self._set_config(section, key, new_value)
+        return new_value or cfg_value
+
+    def _set_config(self, section, key, value):
+        try:
+            self._config.set(section, key, value)
+        except NoSectionError:
+            self._config.add_section(section)
+            self._config.set(section, key, value)
+        with self._config_path.open('w', encoding='utf-8') as f:
+            self._config.write(f)
+
+    def _maybe_refresh_login(self):
+        with self._lock:
+            if self._session_info is None or self._session_expiry < TZ_LOCAL.localize(datetime.now()):
+                for key in ('_service_urls', '_transport_host_port'):
+                    try:
+                        del self.__dict__[key]
+                    except KeyError:
+                        pass
+
+                if 'oauth' in self._config:
+                    self._login_via_google()
+                else:
+                    self._login_via_nest()
+
+    def _get_oauth_token(self):
+        headers = {
+            'Sec-Fetch-Mode': 'cors',
+            'X-Requested-With': 'XmlHttpRequest',
+            'Referer': 'https://accounts.google.com/o/oauth2/iframe',
+            'cookie': self._get_config('oauth', 'cookie', 'OAuth Cookie', required=True)
+        }
+        # token_url = self._get_config('oauth', 'token_url', 'OAuth Token URL', required=True)
+        # resp = self.session.get(token_url, headers=headers)
+        login_hint = self._get_config('oauth', 'login_hint', 'OAuth login_hint', required=True)
+        client_id = self._get_config('oauth', 'client_id', 'OAuth client_id', required=True)
+        params = {
+            'action': ['issueToken'], 'response_type': ['token id_token'],
+            'login_hint': [login_hint], 'client_id': [client_id], 'origin': [NEST_URL],
+            'scope': ['openid profile email https://www.googleapis.com/auth/nest-account'], 'ss_domain': [NEST_URL],
+        }
+        resp = self.session.get(OAUTH_URL, params=params, headers=headers).json()
+        log.log(9, 'Received OAuth response: {}'.format(json.dumps(resp, indent=4, sort_keys=True)))
+        return resp['access_token']
+
+    def _login_via_google(self):
+        token = self._get_oauth_token()
+        headers = {'Authorization': f'Bearer {token}', 'x-goog-api-key': NEST_API_KEY}
+        params = {
+            'embed_google_oauth_access_token': True, 'expire_after': '3600s',
+            'google_oauth_access_token': token, 'policy_id': 'authproxy-oauth-policy',
+        }
+        self._session_info = resp = self.session.post(JWT_URL, params=params, headers=headers).json()
+        log.log(9, 'Initialized session; response: {}'.format(json.dumps(resp, indent=4, sort_keys=True)))
+        claims = resp['claims']
+        expiry = datetime_with_tz(claims['expirationTime'], '%Y-%m-%dT%H:%M:%S.%fZ').astimezone(TZ_LOCAL)
+        self._session_expiry = expiry
+        self._userid = claims['subject']['nestId']['id']
+        self.session.headers['Authorization'] = 'Basic {}'.format(resp['jwt'])
+        log.debug('Session for user={!r} initialized; expiry: {}'.format(self._userid, localize(expiry)))
+
+    def _login_via_nest(self):
+        """This login method is deprecated"""
+        log.debug(f'Initializing session for email={self._email!r}')
+        resp = self.post('session', json={'email': self._email, 'password': self.__password})
+        self._session_info = info = resp.json()
+        self._userid = info['userid']
+        self.session.headers['Authorization'] = 'Basic {}'.format(info['access_token'])
+        self.session.headers['X-nl-user-id'] = self._userid
+        self._session_expiry = expiry = datetime_with_tz(info['expires_in'], '%a, %d-%b-%Y %H:%M:%S %Z')
+        log.debug('Session for user={!r} initialized; expiry: {}'.format(self._userid, localize(expiry)))
+        transport_url = urlparse(info['urls']['transport_url'])
+        self.__dict__['_transport_host_port'] = (transport_url.hostname, transport_url.port)
+
+    @cached_property
+    def __password(self):
         if keyring is not None:
-            password = keyring.get_password(type(self).__name__, email)
-            if update_password and password:
-                keyring.delete_password(type(self).__name__, email)
+            password = keyring.get_password(type(self).__name__, self._email)
+            if self._update_pw and password:
+                keyring.delete_password(type(self).__name__, self._email)
                 password = None
             if password is None:
                 password = getpass()
-                if not no_store_prompt and get_input('Store password in keyring (https://pypi.org/project/keyring/)?'):
-                    keyring.set_password(type(self).__name__, email, password)
+                if not self._no_store_pw and get_input(f'Store password in keyring ({KEYRING_URL})?'):
+                    keyring.set_password(type(self).__name__, self._email, password)
                     log.info('Stored password in keyring')
             else:
                 log.debug('Using password from keyring')
         else:
             password = getpass()
+        return password
 
-        self.__password = password
-        self._lock = RLock()
-        self._email = email
-        self._session_info = None
-        self._session_expiry = None
-        self._userid = None
-        self._nest_host_port = ('home.nest.com', None)
-        self._transport_host_port = None
-        self.serial = serial
+    @cached_property
+    def _service_urls(self):
+        resp = self._app_launch(['buckets'])
+        return resp['service_urls']
 
-    def __init_session(self):
-        with self._lock:
-            if self._session_info is None or self._session_expiry < TZ_LOCAL.localize(datetime.now()):
-                log.debug('Initializing session for email={!r}'.format(self._email))
-                resp = self.post('session', json={'email': self._email, 'password': self.__password})
-                self._session_info = info = resp.json()
-                self._userid = info['userid']
-                self.session.headers['Authorization'] = 'Basic {}'.format(info['access_token'])
-                self.session.headers['X-nl-user-id'] = self._userid
-                self._session_expiry = expiry = datetime_with_tz(info['expires_in'], '%a, %d-%b-%Y %H:%M:%S %Z')
-                log.debug('Session for user={!r} initialized; expiry: {}'.format(self._userid, localize(expiry)))
-                transport_url = urlparse(info['urls']['transport_url'])
-                self._transport_host_port = (transport_url.hostname, transport_url.port)
+    @cached_property
+    def _transport_host_port(self):
+        transport_url = urlparse(self._service_urls['urls']['transport_url'])
+        return transport_url.hostname, transport_url.port
 
     @contextmanager
     def transport_url(self):
         with self._lock:
-            self.__init_session()
-            try:
-                log.debug('Updating host & port to {}:{}'.format(*self._transport_host_port))
-                self.host, self.port = self._transport_host_port
-                yield self
-            finally:
-                pass
+            self._maybe_refresh_login()
+            log.debug('Using host:port={}:{}'.format(*self._transport_host_port))
+            self.host, self.port = self._transport_host_port
+            yield self
 
     @contextmanager
     def nest_url(self):
         with self._lock:
-            self.__init_session()
-            try:
-                log.debug('Updating host & port to {}:{}'.format(*self._nest_host_port))
-                self.host, self.port = self._nest_host_port
-                yield self
-            finally:
-                pass
+            self._maybe_refresh_login()
+            log.debug('Using host:port={}:{}'.format(*self._nest_host_port))
+            self.host, self.port = self._nest_host_port
+            yield self
+
+    def _app_launch(self, bucket_types: List[str]):
+        with self.nest_url():
+            payload = {'known_bucket_types': bucket_types, 'known_bucket_versions': []}
+            resp = self.post(f'api/0.1/user/{self._userid}/app_launch', json=payload)
+            return resp.json()
 
     def app_launch(self, bucket_types=None):
         """
@@ -139,31 +238,62 @@ class NestWebClient(RequestsClient):
         :param list bucket_types: The bucket_types to retrieve (such as device, shared, schedule, etc.)
         :return dict: Mapping of {serial:{bucket_type:{bucket['value']}}}
         """
-        bucket_types = bucket_types or ['device', 'shared', 'schedule']
-        with self.nest_url():
-            payload = {'known_bucket_types': bucket_types, 'known_bucket_versions': []}
-            resp = self.post('api/0.1/user/{}/app_launch'.format(self._userid), json=payload)
-
+        resp = self._app_launch(bucket_types or ['device', 'shared', 'schedule'])
         info = defaultdict(dict)
-        for bucket in resp.json()['updated_buckets']:
+        for bucket in resp['updated_buckets']:
             bucket_type, serial = bucket['object_key'].split('.')
             info[serial][bucket_type] = bucket['value']
         return info
+
+    @cached_property
+    def device_capabilities(self):
+        resp = self.app_launch(['device', 'shared'])
+        return {serial: self._filter_capabilities(info) for serial, info in resp.items()}
+
+    def _filter_capabilities(self, info):
+        capabilities = {
+            key.split('_', 1)[1]: val for key, val in info['device'].items() if key.startswith('has_')
+        }
+        capabilities['fan_capabilities'] = info['device']['fan_capabilities']
+        return capabilities
 
     def get_state(self, serial=None, fahrenheit=True):
         serial = self._validate_serial(serial)
         resp = self.app_launch(['device', 'shared'])
         info = resp[serial]
+        capabilities = self._filter_capabilities(info)
+        # fmt: off
         temps = {
             'shared': (
-                'target_temperature_high', 'target_temperature_low', 'target_temperature', 'current_temperature'
+                'target_temperature_high', 'target_temperature_low', 'target_temperature', 'current_temperature',
             ),
             'device': ('backplate_temperature', 'leaf_threshold_cool')
         }
         non_temps = {
-            'shared': ('target_temperature_type',),
-            'device': ('current_humidity', 'fan_current_speed', 'target_humidity', 'current_schedule_mode')
+            'shared': [
+                'target_temperature_type', 'compressor_lockout_enabled', 'compressor_lockout_timeout',
+                'hvac_ac_state', 'hvac_heater_state', 'target_change_pending',
+            ],
+            'device': (
+                'current_humidity', 'fan_current_speed', 'target_humidity', 'current_schedule_mode', 'fan_capabilities',
+                'time_to_target', 'fan_cooling_enabled', 'fan_cooling_readiness', 'fan_cooling_state',
+                'fan_current_speed', 'fan_schedule_speed', 'fan_timer_duration', 'fan_timer_speed', 'fan_timer_timeout',
+            )
         }
+
+        opt_keys = (
+            'hvac_alt_heat_state', 'hvac_alt_heat_x2_state', 'hvac_aux_heater_state', 'hvac_cool_x2_state',
+            'hvac_cool_x3_state', 'hvac_emer_heat_state', 'hvac_fan_state', 'hvac_heat_x2_state', 'hvac_heat_x3_state',
+        )
+        for key in opt_keys:
+            parts = key.split('_')[1:-1]
+            if parts[-1].startswith('x'):
+                parts = parts[-1:] + parts[:-1]
+            cap_key = '_'.join(parts)
+            if capabilities.get(cap_key):
+                non_temps['shared'].append(key)
+
+        # fmt: on
         state = {}
         for section, keys in temps.items():
             for key in keys:
@@ -234,7 +364,7 @@ class NestWebClient(RequestsClient):
         resp = self._put_value(serial, {'target_temperature_type': mode})
         return resp.json()
 
-    def start_fan(self, duration, serial=None):
+    def start_fan(self, duration=1800, serial=None):
         """
         :param int duration: Number of seconds for which the fan should run
         :param str serial: A Nest thermostat serial number
