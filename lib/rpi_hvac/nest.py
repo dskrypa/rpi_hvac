@@ -66,7 +66,7 @@ class NestWebClient(RequestsClient):
         self._session_expiry = None
         self._userid = None
         self._nest_host_port = ('home.nest.com', None)
-        self.serial = self._get_config('device', 'serial', 'thermostat serial number', serial)
+        self._serial = self._get_config('device', 'serial', 'thermostat serial number', serial)
 
     @cached_property
     def _config(self) -> ConfigParser:
@@ -249,6 +249,22 @@ class NestWebClient(RequestsClient):
             self.host, self.port = self._nest_host_port
             yield self
 
+    @property
+    def serial(self):
+        if not self._serial:
+            resp = self.app_launch(['device'])
+            if len(resp) > 1:
+                serials = ', '.join(sorted(resp.keys()))
+                raise RuntimeError(
+                    f'A device serial number must be provided in {self._config_path} or at init - found multiple '
+                    f'devices: {serials}'
+                )
+            elif not resp:
+                raise RuntimeError('No devices were found')
+            self._serial = next(iter(resp))
+            self._set_config('device', 'serial', self._serial)
+        return self._serial
+
     def _app_launch(self, bucket_types: List[str], raw=False):
         with self.nest_url():
             payload = {'known_bucket_types': bucket_types, 'known_bucket_versions': []}
@@ -315,10 +331,9 @@ class NestWebClient(RequestsClient):
         capabilities['fan_capabilities'] = info['device']['fan_capabilities']
         return capabilities
 
-    def get_state(self, serial=None, fahrenheit=True):
-        serial = self._validate_serial(serial)
+    def get_state(self, fahrenheit=True):
         resp = self.app_launch(['device', 'shared'])
-        info = resp[serial]
+        info = resp[self.serial]
         capabilities = self._filter_capabilities(info)
         # fmt: off
         temps = {
@@ -366,23 +381,15 @@ class NestWebClient(RequestsClient):
         with self.transport_url():
             return self.get('v2/mobile/user.{}'.format(self._userid)).json()
 
-    def _validate_serial(self, serial):
-        serial = serial or self.serial
-        if not serial:
-            raise ValueError('A Nest thermostat serial number must be provided as a param or set for the client object')
-        return serial
-
-    def _put_value(self, serial, value):
-        serial = self._validate_serial(serial)
+    def _put_value(self, value):
         with self.transport_url():
-            payload = {'objects': [{'object_key': f'shared.{serial}', 'op': 'MERGE', 'value': value}]}
+            payload = {'objects': [{'object_key': f'shared.{self.serial}', 'op': 'MERGE', 'value': value}]}
             return self.post('v5/put', json=payload)
 
-    def set_temp_range(self, low, high, serial=None, unit='f'):
+    def set_temp_range(self, low, high, unit='f'):
         """
         :param float low: Minimum temperature to maintain in Celsius (heat will turn on if the temp drops below this)
         :param float high: Maximum temperature to allow in Celsius (air conditioning will turn on above this)
-        :param str serial: A Nest thermostat serial number
         :param str unit: Either 'f' or 'c' for fahrenheit/celsius
         :return: The parsed response
         """
@@ -392,13 +399,12 @@ class NestWebClient(RequestsClient):
             high = f2c(high)
         elif unit[0] != 'c':
             raise ValueError('Unit must be either \'f\' or \'c\' for fahrenheit/celsius')
-        resp = self._put_value(serial, {'target_temperature_low': low, 'target_temperature_high': high})
+        resp = self._put_value({'target_temperature_low': low, 'target_temperature_high': high})
         return resp.json()
 
-    def set_temp(self, temp, serial=None, unit='f'):
+    def set_temp(self, temp, unit='f'):
         """
         :param float temp: The target temperature to maintain in Celsius
-        :param str serial: A Nest thermostat serial number
         :param str unit: Either 'f' or 'c' for fahrenheit/celsius
         :return: The parsed response
         """
@@ -407,42 +413,36 @@ class NestWebClient(RequestsClient):
             temp = f2c(temp)
         elif unit[0] != 'c':
             raise ValueError('Unit must be either \'f\' or \'c\' for fahrenheit/celsius')
-        resp = self._put_value(serial, {'target_temperature': temp})
+        resp = self._put_value({'target_temperature': temp})
         return resp.json()
 
-    def set_mode(self, mode, serial=None):
+    def set_mode(self, mode):
         """
         :param str mode: One of 'cool', 'heat', 'range', or 'off'
-        :param str serial: A Nest thermostat serial number
         :return: The parsed response
         """
         mode = mode.lower()
         if mode not in ('cool', 'heat', 'range', 'off'):
             raise ValueError(f'Invalid mode: {mode!r}')
-        resp = self._put_value(serial, {'target_temperature_type': mode})
+        resp = self._put_value({'target_temperature_type': mode})
         return resp.json()
 
-    def start_fan(self, duration=1800, serial=None):
+    def start_fan(self, duration=1800):
         """
         :param int duration: Number of seconds for which the fan should run
-        :param str serial: A Nest thermostat serial number
         :return: The parsed response
         """
         timeout = int(time.time()) + duration
         fmt = 'Submitting fan start request with duration={} => end time of {}'
         log.debug(fmt.format(format_duration(duration), timeout))
-        resp = self._put_value(serial, {'fan_timer_timeout': timeout})
+        resp = self._put_value({'fan_timer_timeout': timeout})
         return resp.json()
 
-    def stop_fan(self, serial=None):
-        """
-        :param str serial: A Nest thermostat serial number
-        :return: The parsed response
-        """
-        resp = self._put_value(serial, {'fan_timer_timeout': 0})
+    def stop_fan(self):
+        resp = self._put_value({'fan_timer_timeout': 0})
         return resp.json()
 
-    def get_energy_usage_history(self, serial=None):
+    def get_energy_usage_history(self):
         """
         Response example::
             {
@@ -467,12 +467,10 @@ class NestWebClient(RequestsClient):
                 }]
             }
 
-        :param str serial: A Nest thermostat serial number
         :return: The parsed response
         """
-        serial = self._validate_serial(serial)
         with self.transport_url():
-            payload = {'objects': [{'object_key': f'energy_latest.{serial}'}]}
+            payload = {'objects': [{'object_key': f'energy_latest.{self.serial}'}]}
             resp = self.post('v5/subscribe', json=payload)
             return resp.json()
 
@@ -509,9 +507,8 @@ class NestWebClient(RequestsClient):
             resp = self.get('api/0.1/weather/forecast/{},{}'.format(zip_code, country_code))
             return resp.json()
 
-    def get_schedule(self, unit='f', serial=None):
-        serial = self._validate_serial(serial)
-        schedule_info = self.app_launch(['schedule'])[serial]['schedule']
+    def get_schedule(self, unit='f'):
+        schedule_info = self.app_launch(['schedule'])[self.serial]['schedule']
         day_names = calendar.day_name[-1:] + calendar.day_name[:-1]
         schedule = {}
         for day, (day_num, day_schedule) in zip(day_names, sorted(schedule_info['days'].items())):
@@ -521,14 +518,13 @@ class NestWebClient(RequestsClient):
             }
         return schedule
 
-    def update_schedule(self, days: Dict[str, Dict[str, Dict[str, Any]]], serial=None):
+    def update_schedule(self, days: Dict[str, Dict[str, Dict[str, Any]]]):
         # This has not yet been tested
-        serial = self._validate_serial(serial)
         current = self._app_launch(['schedule'])['updated_buckets'][0]
         value = {
             'ver': current['ver'], 'schedule_mode': current['schedule_mode'], 'name': current['name'], 'days': days
         }
-        payload = {'objects': [{'object_key': f'schedule.{serial}', 'op': 'OVERWRITE', 'value': value}]}
+        payload = {'objects': [{'object_key': f'schedule.{self.serial}', 'op': 'OVERWRITE', 'value': value}]}
         with self.transport_url():
             return self.post('v5/put', json=payload)
 
