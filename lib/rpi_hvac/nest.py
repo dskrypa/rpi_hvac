@@ -4,6 +4,7 @@ Library for interacting with the Nest thermostat via the cloud API
 :author: Doug Skrypa
 """
 
+import calendar
 import json
 import logging
 import pickle
@@ -27,7 +28,7 @@ except ImportError:
 from ds_tools.core.filesystem import get_user_cache_dir
 from ds_tools.input import get_input
 from requests_client import RequestsClient, USER_AGENT_CHROME
-from tz_aware_dt import datetime_with_tz, localize, format_duration, TZ_LOCAL, now
+from tz_aware_dt import datetime_with_tz, localize, format_duration, TZ_LOCAL, now, TZ_UTC
 from .utils import celsius_to_fahrenheit as c2f, fahrenheit_to_celsius as f2c
 
 __all__ = ['NestWebClient']
@@ -42,15 +43,19 @@ OAUTH_URL = 'https://accounts.google.com/o/oauth2/iframerpc'
 
 
 class NestWebClient(RequestsClient):
-    def __init__(self, email=None, serial=None, no_store_prompt=False, update_password=False, config_path=None):
+    def __init__(
+        self, email=None, serial=None, no_store_prompt=False, update_password=False, config_path=None, reauth=False
+    ):
         """
         :param str email: The email address to be used for login
         :param str serial: The serial number of the thermostat to be managed by this client
         :param bool no_store_prompt: Do not prompt to store the password securely
         :param bool update_password: Prompt to update the stored password, even if one already exists
         :param str config_path: The config path to use
+        :param bool reauth: Force reauth, even if a cached session exists
         """
         super().__init__(NEST_URL, user_agent_fmt=USER_AGENT_CHROME, headers={'Referer': NEST_URL})
+        self._reauth = reauth
         self._lock = RLock()
         self._cache_dir = Path(get_user_cache_dir('nest'))
         self._config_path = Path(config_path or DEFAULT_CONFIG_PATH).expanduser()
@@ -140,6 +145,9 @@ class NestWebClient(RequestsClient):
         return resp['access_token']
 
     def _load_cached_session(self):
+        if self._reauth:
+            raise SessionExpired('Forced reauth')
+
         path = self._cached_session_path
         if path.exists():
             with path.open('rb') as f:
@@ -180,7 +188,7 @@ class NestWebClient(RequestsClient):
         resp = self.session.post(JWT_URL, params=params, headers=headers).json()
         log.log(9, 'Initialized session; response: {}'.format(json.dumps(resp, indent=4, sort_keys=True)))
         claims = resp['claims']
-        expiry = datetime_with_tz(claims['expirationTime'], '%Y-%m-%dT%H:%M:%S.%fZ').astimezone(TZ_LOCAL)
+        expiry = datetime_with_tz(claims['expirationTime'], '%Y-%m-%dT%H:%M:%S.%fZ', TZ_UTC).astimezone(TZ_LOCAL)
         self._register_session(expiry, claims['subject']['nestId']['id'], resp['jwt'], save=True)
         log.debug(f'Initialized session for user={self._userid!r} with expiry={localize(expiry)}')
 
@@ -217,7 +225,7 @@ class NestWebClient(RequestsClient):
 
     @cached_property
     def _service_urls(self):
-        resp = self._app_launch(['buckets'])
+        resp = self._app_launch([])
         return resp['service_urls']
 
     @cached_property
@@ -284,6 +292,16 @@ class NestWebClient(RequestsClient):
             bucket_type, serial = bucket['object_key'].split('.')
             info[serial][bucket_type] = bucket['value']
         return info
+
+    @cached_property
+    def bucket_types(self):
+        resp = self._app_launch(['buckets'])
+        buckets = resp['updated_buckets'][0]['value']['buckets']
+        types = defaultdict(set)
+        for bucket in buckets:
+            bucket_type, category = bucket.split('.', 1)
+            types[category].add(bucket_type)
+        return types
 
     @cached_property
     def device_capabilities(self):
@@ -458,7 +476,7 @@ class NestWebClient(RequestsClient):
             resp = self.post('v5/subscribe', json=payload)
             return resp.json()
 
-    def get_weather(self, zip_code, country_code):
+    def get_weather(self, zip_code=None, country_code='US'):
         """
         Get the weather forecast.  Response format::
             {
@@ -481,9 +499,37 @@ class NestWebClient(RequestsClient):
         :param str country_code: A 2-letter country code (such as 'US')
         :return dict: The parsed response
         """
+        if zip_code is None:
+            resp = self._app_launch([])
+            location = next(iter(resp['weather_for_structures'].values()))['location']
+            zip_code = location['zip']
+            country_code = country_code or location['country']
+
         with self.nest_url():
             resp = self.get('api/0.1/weather/forecast/{},{}'.format(zip_code, country_code))
             return resp.json()
+
+    def get_schedule(self, unit='f', serial=None):
+        serial = self._validate_serial(serial)
+        schedule_info = self.app_launch(['schedule'])[serial]['schedule']
+        day_names = calendar.day_name[-1:] + calendar.day_name[:-1]
+        schedule = {}
+        for day, (day_num, day_schedule) in zip(day_names, sorted(schedule_info['days'].items())):
+            schedule[day] = {
+                secs_to_wall(entry['time']): c2f(entry['temp']) if unit == 'f' else entry['temp']
+                for i, entry in sorted(day_schedule.items())
+            }
+        return schedule
+
+
+def secs_to_wall(seconds: int):
+    hour, minute = divmod(seconds // 60, 60)
+    return f'{hour:02d}:{minute:02d}'
+
+
+def wall_to_secs(wall: str):
+    hour, minute = map(int, wall.split(':'))
+    return (hour * 60 + minute) * 60
 
 
 class SessionExpired(Exception):
