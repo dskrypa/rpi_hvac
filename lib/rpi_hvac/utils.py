@@ -7,7 +7,7 @@ Library for interacting with the Nest thermostat via the cloud API
 import logging
 import math
 
-__all__ = ['celsius_to_fahrenheit', 'fahrenheit_to_celsius', 'estimate_ambient', 'get_input']
+__all__ = ['celsius_to_fahrenheit', 'fahrenheit_to_celsius', 'estimate_ambient']
 log = logging.getLogger(__name__)
 
 
@@ -17,30 +17,6 @@ def celsius_to_fahrenheit(deg_c):
 
 def fahrenheit_to_celsius(deg_f):
     return (deg_f - 32) * 5 / 9
-
-
-def get_input(prompt):
-    """
-    Prompt the user for input, and parse the results.
-
-    :param str prompt: The prompt for user input
-    :return bool: True if the user entered ``Y``, False if the user entered ``N``
-    :raises: ValueError if the user did not enter a string that began with ``Y`` / ``N``
-    """
-    suffix = ' ' if not prompt.endswith(' ') else ''
-    try:
-        user_input = input(prompt + suffix).strip()
-    except EOFError as e:
-        raise ValueError('Unable to read stdin (this is often caused by piped input)') from e
-    else:
-        try:
-            first_char = user_input[0].upper()
-        except IndexError as e:
-            raise ValueError('No input was provided') from e
-        else:
-            if first_char in ('Y', 'N'):
-                return first_char == 'Y'
-    raise ValueError('Expected "yes"/"y" or "no"/"n"')
 
 
 # ----------------------------------------------------------------------------------------------------------------------
