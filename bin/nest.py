@@ -50,6 +50,7 @@ def parser():
     show_parser.add_argument('buckets', nargs='*', help='The buckets to show (only applies to item=buckets)')
     show_parser.add_argument('--format', '-f', choices=Printer.formats, help='Output format')
     show_parser.add_argument('--unit', '-u', nargs='?', default='f', choices=('f', 'c'), help='Unit (Celsius or Fahrenheit) for functions that support it')
+    show_parser.add_argument('--raw', '-r', action='store_true', help='Show the full raw response instead of the processed response (only applies to item=buckets)')
 
     parser.add_common_arg('--config', '-c', metavar='PATH', default=DEFAULT_CONFIG_PATH, help='Config file location')
     parser.add_common_arg('--reauth', '-A', action='store_true', help='Force re-authentication, even if a cached session exists')
@@ -87,7 +88,7 @@ def main():
         elif item == 'weather':
             data = nest.get_weather()
         elif item == 'buckets':
-            data = nest.app_launch(args.buckets)
+            data = nest._app_launch(args.buckets) if args.raw else nest.app_launch(args.buckets)
         elif item == 'bucket_names':
             data = nest.bucket_types
         elif item == 'schedule':

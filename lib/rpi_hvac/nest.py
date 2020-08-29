@@ -17,7 +17,7 @@ from functools import cached_property
 from getpass import getpass
 from pathlib import Path
 from threading import RLock
-from typing import List
+from typing import List, Dict, Any
 from urllib.parse import urlparse
 
 try:
@@ -249,11 +249,11 @@ class NestWebClient(RequestsClient):
             self.host, self.port = self._nest_host_port
             yield self
 
-    def _app_launch(self, bucket_types: List[str]):
+    def _app_launch(self, bucket_types: List[str], raw=False):
         with self.nest_url():
             payload = {'known_bucket_types': bucket_types, 'known_bucket_versions': []}
             resp = self.post(f'api/0.1/user/{self._userid}/app_launch', json=payload)
-            return resp.json()
+            return resp if raw else resp.json()
 
     def app_launch(self, bucket_types=None):
         """
@@ -520,6 +520,17 @@ class NestWebClient(RequestsClient):
                 for i, entry in sorted(day_schedule.items())
             }
         return schedule
+
+    def update_schedule(self, days: Dict[str, Dict[str, Dict[str, Any]]], serial=None):
+        # This has not yet been tested
+        serial = self._validate_serial(serial)
+        current = self._app_launch(['schedule'])['updated_buckets'][0]
+        value = {
+            'ver': current['ver'], 'schedule_mode': current['schedule_mode'], 'name': current['name'], 'days': days
+        }
+        payload = {'objects': [{'object_key': f'schedule.{serial}', 'op': 'OVERWRITE', 'value': value}]}
+        with self.transport_url():
+            return self.post('v5/put', json=payload)
 
 
 def secs_to_wall(seconds: int):
