@@ -6,6 +6,7 @@ Library for interacting with the Nest thermostat via the cloud API
 
 import json
 import logging
+import pickle
 import time
 from collections import defaultdict
 from configparser import ConfigParser, NoSectionError
@@ -23,9 +24,10 @@ try:
 except ImportError:
     keyring = None
 
+from ds_tools.core.filesystem import get_user_cache_dir
 from ds_tools.input import get_input
 from requests_client import RequestsClient, USER_AGENT_CHROME
-from tz_aware_dt import datetime_with_tz, localize, format_duration, TZ_LOCAL
+from tz_aware_dt import datetime_with_tz, localize, format_duration, TZ_LOCAL, now
 from .utils import celsius_to_fahrenheit as c2f, fahrenheit_to_celsius as f2c
 
 __all__ = ['NestWebClient']
@@ -50,6 +52,7 @@ class NestWebClient(RequestsClient):
         """
         super().__init__(NEST_URL, user_agent_fmt=USER_AGENT_CHROME, headers={'Referer': NEST_URL})
         self._lock = RLock()
+        self._cache_dir = Path(get_user_cache_dir('nest'))
         self._config_path = Path(config_path or DEFAULT_CONFIG_PATH).expanduser()
         self._no_store_pw = no_store_prompt
         self._update_pw = update_password
@@ -96,7 +99,7 @@ class NestWebClient(RequestsClient):
 
     def _maybe_refresh_login(self):
         with self._lock:
-            if self._session_info is None or self._session_expiry < TZ_LOCAL.localize(datetime.now()):
+            if self._session_expiry is None or self._session_expiry < TZ_LOCAL.localize(datetime.now()):
                 for key in ('_service_urls', '_transport_host_port'):
                     try:
                         del self.__dict__[key]
@@ -104,9 +107,17 @@ class NestWebClient(RequestsClient):
                         pass
 
                 if 'oauth' in self._config:
-                    self._login_via_google()
+                    try:
+                        self._load_cached_session()
+                    except SessionExpired as e:
+                        log.debug(e)
+                        self._login_via_google()
                 else:
                     self._login_via_nest()
+
+    @property
+    def _cached_session_path(self):
+        return self._cache_dir.joinpath('session.pickle')
 
     def _get_oauth_token(self):
         headers = {
@@ -128,6 +139,37 @@ class NestWebClient(RequestsClient):
         log.log(9, 'Received OAuth response: {}'.format(json.dumps(resp, indent=4, sort_keys=True)))
         return resp['access_token']
 
+    def _load_cached_session(self):
+        path = self._cached_session_path
+        if path.exists():
+            with path.open('rb') as f:
+                try:
+                    expiry, userid, jwt_token, cookies = pickle.load(f)
+                except (TypeError, ValueError) as e:
+                    raise SessionExpired(f'Found a cached session, but encountered an error loading it: {e}')
+
+            if expiry < now(as_datetime=True) or any(cookie.expires < time.time() for cookie in cookies):
+                raise SessionExpired('Found a cached session, but it expired')
+
+            self._register_session(expiry, userid, jwt_token, cookies)
+            log.debug(f'Loaded session for user={userid} with expiry={localize(expiry)}')
+        else:
+            raise SessionExpired('No cached session was found')
+
+    def _register_session(self, expiry, userid, jwt_token, cookies=None, save=False):
+        self._session_expiry = expiry
+        self._userid = userid
+        self.session.headers['Authorization'] = f'Basic {jwt_token}'
+        if cookies is not None:
+            for cookie in cookies:
+                self.session.cookies.set_cookie(cookie)
+
+        if save:
+            path = self._cached_session_path
+            log.debug(f'Saving session info in cache: {path}')
+            with path.open('wb') as f:
+                pickle.dump((expiry, userid, jwt_token, list(self.session.cookies)), f)
+
     def _login_via_google(self):
         token = self._get_oauth_token()
         headers = {'Authorization': f'Bearer {token}', 'x-goog-api-key': NEST_API_KEY}
@@ -135,25 +177,23 @@ class NestWebClient(RequestsClient):
             'embed_google_oauth_access_token': True, 'expire_after': '3600s',
             'google_oauth_access_token': token, 'policy_id': 'authproxy-oauth-policy',
         }
-        self._session_info = resp = self.session.post(JWT_URL, params=params, headers=headers).json()
+        resp = self.session.post(JWT_URL, params=params, headers=headers).json()
         log.log(9, 'Initialized session; response: {}'.format(json.dumps(resp, indent=4, sort_keys=True)))
         claims = resp['claims']
         expiry = datetime_with_tz(claims['expirationTime'], '%Y-%m-%dT%H:%M:%S.%fZ').astimezone(TZ_LOCAL)
-        self._session_expiry = expiry
-        self._userid = claims['subject']['nestId']['id']
-        self.session.headers['Authorization'] = 'Basic {}'.format(resp['jwt'])
-        log.debug('Session for user={!r} initialized; expiry: {}'.format(self._userid, localize(expiry)))
+        self._register_session(expiry, claims['subject']['nestId']['id'], resp['jwt'], save=True)
+        log.debug(f'Initialized session for user={self._userid!r} with expiry={localize(expiry)}')
 
     def _login_via_nest(self):
         """This login method is deprecated"""
         log.debug(f'Initializing session for email={self._email!r}')
         resp = self.post('session', json={'email': self._email, 'password': self.__password})
-        self._session_info = info = resp.json()
+        info = resp.json()
         self._userid = info['userid']
         self.session.headers['Authorization'] = 'Basic {}'.format(info['access_token'])
         self.session.headers['X-nl-user-id'] = self._userid
         self._session_expiry = expiry = datetime_with_tz(info['expires_in'], '%a, %d-%b-%Y %H:%M:%S %Z')
-        log.debug('Session for user={!r} initialized; expiry: {}'.format(self._userid, localize(expiry)))
+        log.debug(f'Initialized legacy session for user={self._userid!r} with expiry={localize(expiry)}')
         transport_url = urlparse(info['urls']['transport_url'])
         self.__dict__['_transport_host_port'] = (transport_url.hostname, transport_url.port)
 
@@ -444,3 +484,7 @@ class NestWebClient(RequestsClient):
         with self.nest_url():
             resp = self.get('api/0.1/weather/forecast/{},{}'.format(zip_code, country_code))
             return resp.json()
+
+
+class SessionExpired(Exception):
+    pass
