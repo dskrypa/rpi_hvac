@@ -17,7 +17,7 @@ from functools import cached_property
 from getpass import getpass
 from pathlib import Path
 from threading import RLock
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Union, Optional
 from urllib.parse import urlparse
 
 try:
@@ -27,9 +27,11 @@ except ImportError:
 
 from ds_tools.core.filesystem import get_user_cache_dir
 from ds_tools.input import get_input
+from ds_tools.output import Printer, SimpleColumn, Table
 from requests_client import RequestsClient, USER_AGENT_CHROME
 from tz_aware_dt import datetime_with_tz, localize, format_duration, TZ_LOCAL, now, TZ_UTC
-from .utils import celsius_to_fahrenheit as c2f, fahrenheit_to_celsius as f2c, secs_to_wall
+from .cron import NestCronSchedule
+from .utils import celsius_to_fahrenheit as c2f, fahrenheit_to_celsius as f2c, secs_to_wall, wall_to_secs
 
 __all__ = ['NestWebClient']
 log = logging.getLogger(__name__)
@@ -64,7 +66,7 @@ class NestWebClient(RequestsClient):
         self._email = self._get_config('credentials', 'email', 'email address', email, required=True)
         self._session_info = None
         self._session_expiry = None
-        self._userid = None
+        self.user_id = None
         self._nest_host_port = ('home.nest.com', None)
         self._serial = self._get_config('device', 'serial', 'thermostat serial number', serial)
 
@@ -166,7 +168,7 @@ class NestWebClient(RequestsClient):
 
     def _register_session(self, expiry, userid, jwt_token, cookies=None, save=False):
         self._session_expiry = expiry
-        self._userid = userid
+        self.user_id = userid
         self.session.headers['Authorization'] = f'Basic {jwt_token}'
         if cookies is not None:
             for cookie in cookies:
@@ -190,18 +192,18 @@ class NestWebClient(RequestsClient):
         claims = resp['claims']
         expiry = datetime_with_tz(claims['expirationTime'], '%Y-%m-%dT%H:%M:%S.%fZ', TZ_UTC).astimezone(TZ_LOCAL)
         self._register_session(expiry, claims['subject']['nestId']['id'], resp['jwt'], save=True)
-        log.debug(f'Initialized session for user={self._userid!r} with expiry={localize(expiry)}')
+        log.debug(f'Initialized session for user={self.user_id!r} with expiry={localize(expiry)}')
 
     def _login_via_nest(self):
         """This login method is deprecated"""
         log.debug(f'Initializing session for email={self._email!r}')
         resp = self.post('session', json={'email': self._email, 'password': self.__password})
         info = resp.json()
-        self._userid = info['userid']
+        self.user_id = info['userid']
         self.session.headers['Authorization'] = 'Basic {}'.format(info['access_token'])
-        self.session.headers['X-nl-user-id'] = self._userid
+        self.session.headers['X-nl-user-id'] = self.user_id
         self._session_expiry = expiry = datetime_with_tz(info['expires_in'], '%a, %d-%b-%Y %H:%M:%S %Z')
-        log.debug(f'Initialized legacy session for user={self._userid!r} with expiry={localize(expiry)}')
+        log.debug(f'Initialized legacy session for user={self.user_id!r} with expiry={localize(expiry)}')
         transport_url = urlparse(info['urls']['transport_url'])
         self.__dict__['_transport_host_port'] = (transport_url.hostname, transport_url.port)
 
@@ -249,7 +251,7 @@ class NestWebClient(RequestsClient):
             self.host, self.port = self._nest_host_port
             yield self
 
-    @property
+    @cached_property
     def serial(self):
         if not self._serial:
             resp = self.app_launch(['device'])
@@ -268,7 +270,7 @@ class NestWebClient(RequestsClient):
     def _app_launch(self, bucket_types: List[str], raw=False):
         with self.nest_url():
             payload = {'known_bucket_types': bucket_types, 'known_bucket_versions': []}
-            resp = self.post(f'api/0.1/user/{self._userid}/app_launch', json=payload)
+            resp = self.post(f'api/0.1/user/{self.user_id}/app_launch', json=payload)
             return resp if raw else resp.json()
 
     def app_launch(self, bucket_types=None):
@@ -379,11 +381,12 @@ class NestWebClient(RequestsClient):
 
     def get_mobile_info(self):
         with self.transport_url():
-            return self.get('v2/mobile/user.{}'.format(self._userid)).json()
+            return self.get('v2/mobile/user.{}'.format(self.user_id)).json()
 
-    def _put_value(self, value):
+    def _post_put(self, value: Any, obj_key: Optional[str] = None, op: Optional[str] = None):
+        obj_key = obj_key or f'shared.{self.serial}'
         with self.transport_url():
-            payload = {'objects': [{'object_key': f'shared.{self.serial}', 'op': 'MERGE', 'value': value}]}
+            payload = {'objects': [{'object_key': obj_key, 'op': op or 'MERGE', 'value': value}]}
             return self.post('v5/put', json=payload)
 
     def set_temp_range(self, low, high, unit='f'):
@@ -399,7 +402,7 @@ class NestWebClient(RequestsClient):
             high = f2c(high)
         elif unit[0] != 'c':
             raise ValueError('Unit must be either \'f\' or \'c\' for fahrenheit/celsius')
-        resp = self._put_value({'target_temperature_low': low, 'target_temperature_high': high})
+        resp = self._post_put({'target_temperature_low': low, 'target_temperature_high': high})
         return resp.json()
 
     def set_temp(self, temp, unit='f'):
@@ -413,7 +416,7 @@ class NestWebClient(RequestsClient):
             temp = f2c(temp)
         elif unit[0] != 'c':
             raise ValueError('Unit must be either \'f\' or \'c\' for fahrenheit/celsius')
-        resp = self._put_value({'target_temperature': temp})
+        resp = self._post_put({'target_temperature': temp})
         return resp.json()
 
     def set_mode(self, mode):
@@ -424,7 +427,7 @@ class NestWebClient(RequestsClient):
         mode = mode.lower()
         if mode not in ('cool', 'heat', 'range', 'off'):
             raise ValueError(f'Invalid mode: {mode!r}')
-        resp = self._put_value({'target_temperature_type': mode})
+        resp = self._post_put({'target_temperature_type': mode})
         return resp.json()
 
     def start_fan(self, duration=1800):
@@ -435,11 +438,11 @@ class NestWebClient(RequestsClient):
         timeout = int(time.time()) + duration
         fmt = 'Submitting fan start request with duration={} => end time of {}'
         log.debug(fmt.format(format_duration(duration), timeout))
-        resp = self._put_value({'fan_timer_timeout': timeout})
+        resp = self._post_put({'fan_timer_timeout': timeout})
         return resp.json()
 
     def stop_fan(self):
-        resp = self._put_value({'fan_timer_timeout': 0})
+        resp = self._post_put({'fan_timer_timeout': 0})
         return resp.json()
 
     def get_energy_usage_history(self):
@@ -507,34 +510,214 @@ class NestWebClient(RequestsClient):
             resp = self.get('api/0.1/weather/forecast/{},{}'.format(zip_code, country_code))
             return resp.json()
 
-    def get_schedule(self, unit='f'):
-        schedule_info = self.app_launch(['schedule'])[self.serial]['schedule']
-        day_names = calendar.day_name[-1:] + calendar.day_name[:-1]
-        schedule = {}
-        for day, (day_num, day_schedule) in zip(day_names, sorted(schedule_info['days'].items())):
-            schedule[day] = {
-                secs_to_wall(entry['time']): c2f(entry['temp']) if unit == 'f' else entry['temp']
-                for i, entry in sorted(day_schedule.items())
-            }
-        return schedule
+    def get_schedule(self) -> 'NestSchedule':
+        raw = self._app_launch(['schedule'])['updated_buckets']
+        return NestSchedule(self, raw)
 
-    def _get_schedule(self):
-        schedule_info = self.app_launch(['schedule'])[self.serial]['schedule']
-        schedule = {}
-        for day, day_schedule in sorted(schedule_info['days'].items()):
-            schedule[int(day)] = [entry for i, entry in sorted(day_schedule.items())]
-        return schedule
 
-    def update_schedule(self, days: Dict[str, Dict[str, Dict[str, Any]]]):
-        # This has not yet been tested
-        current = self._app_launch(['schedule'])['updated_buckets'][0]
-        value = {
-            'ver': current['ver'], 'schedule_mode': current['schedule_mode'], 'name': current['name'], 'days': days
+class NestSchedule:
+    def __init__(self, nest: NestWebClient, raw_schedules: List[Dict[str, Any]]):
+        """
+        :param NestWebClient nest: The :class:`NestWebClient` from which this schedule originated
+        :param list raw_schedules: The result of NestWebClient._app_launch(['schedule'])['updated_buckets']
+        """
+        self._nest = nest
+        self.object_key = f'schedule.{self._nest.serial}'
+        self.user_id = f'user.{self._nest.user_id}'
+        for entry in raw_schedules:
+            if entry.get('object_key') == self.object_key:
+                self._raw = entry
+                break
+        else:
+            raise ValueError(f'Unable to find an entry for {self.object_key=!r} in the provided raw_schedule')
+        self._rev = self._raw['object_revision']
+        self._timestamp = self._raw['object_timestamp']
+        info = self._raw['value']
+        self._ver = info['ver']
+        self._schedule_mode = info['schedule_mode']
+        self._name = info['name']
+        self._schedule = {
+            int(day): [entry for i, entry in sorted(sched.items())] for day, sched in sorted(info['days'].items())
         }
-        payload = {'objects': [{'object_key': f'schedule.{self.serial}', 'op': 'OVERWRITE', 'value': value}]}
-        with self.transport_url():
-            return self.post('v5/put', json=payload)
+
+    def update(self, cron_str: str, action: str, temp: float, unit: str = 'c', dry_run: bool = False):
+        cron = NestCronSchedule.from_cron(cron_str)
+        changes_made = 0
+        if action == 'remove':
+            for dow, tod_seconds in cron:
+                try:
+                    self.remove(dow, tod_seconds)
+                except TimeNotFound as e:
+                    log.debug(e)
+                    pass
+                else:
+                    log.debug(f'Removed time={secs_to_wall(tod_seconds)} from {dow=}')
+                    changes_made += 1
+        elif action == 'add':
+            for dow, tod_seconds in cron:
+                self.insert(dow, tod_seconds, temp, unit)
+                changes_made += 1
+        else:
+            raise ValueError(f'Unexpected {action=!r}')
+
+        if changes_made:
+            past, tf = ('Added', 'to') if action == 'add' else ('Removed', 'from')
+            log.info(f'{past} {changes_made} entries {tf} {self._schedule_mode} schedule with name={self._name!r}')
+            self.push(dry_run)
+        else:
+            log.info(f'No changes made')
+
+    def insert(self, day: int, time_of_day: Union[str, int], temp: float, unit: str = 'c'):
+        if unit not in ('f', 'c'):
+            raise ValueError(f'Unexpected temperature {unit=!r}')
+        elif not 0 <= day < 7:
+            raise ValueError(f'Invalid {day=!r} - Expected 0=Sunday ~ 6=Saturday')
+        temp = f2c(temp) if unit == 'f' else temp
+        time_of_day = wall_to_secs(time_of_day) if isinstance(time_of_day, str) else time_of_day
+        if not 0 <= time_of_day < 86400:
+            raise ValueError(f'Invalid {time_of_day=!r} ({secs_to_wall(time_of_day)}) - must be > 0 and < 86400')
+
+        entry = {
+            'temp': temp,
+            'touched_by': self._user_num,
+            'time': time_of_day,
+            'touched_tzo': -14400,
+            'type': self._schedule_mode,
+            'entry_type': 'setpoint',
+            'touched_user_id': self.user_id,
+            'touched_at': int(time.time()),
+        }
+        day_schedule = self._schedule.setdefault(day, [])
+        for i, existing in enumerate(day_schedule):
+            if existing['time'] == time_of_day:
+                day_schedule[i] = entry
+                break
+        else:
+            day_schedule.append(entry)
+        self._update_continuations()
+
+    def remove(self, day: int, time_of_day: Union[str, int]):
+        if not 0 <= day < 7:
+            raise ValueError(f'Invalid {day=!r} - Expected 0=Sunday ~ 6=Saturday')
+        time_of_day = wall_to_secs(time_of_day) if isinstance(time_of_day, str) else time_of_day
+        if not 0 < time_of_day < 86400:
+            raise ValueError(f'Invalid {time_of_day=!r} ({secs_to_wall(time_of_day)}) - must be > 0 and < 86400')
+
+        day_entries = self._schedule.setdefault(day, [])
+        index = next((i for i, entry in enumerate(day_entries) if entry['time'] == time_of_day), None)
+        if index is None:
+            times = ', '.join(sorted(secs_to_wall(e['time']) for e in day_entries))
+            raise TimeNotFound(
+                f'Invalid {time_of_day=!r} ({secs_to_wall(time_of_day)}) - not found in {day=} with times: {times}'
+            )
+        day_entries.pop(index)
+        self._update_continuations()
+
+    def push(self, dry_run: bool = False):
+        days = {
+            str(day): {str(i): entry for i, entry in enumerate(entries)}
+            for day, entries in sorted(self._schedule.items())
+        }
+        log.info('New schedule to be pushed:\n{}'.format(self.format()))
+        log.debug('Full schedule to be pushed: {}'.format(json.dumps(days, indent=4, sort_keys=True)))
+        prefix = '[DRY RUN] Would push' if dry_run else 'Pushing'
+        log.info(f'{prefix} changes to {self._schedule_mode} schedule with name={self._name!r}')
+        if not dry_run:
+            value = {
+                'ver': self._ver, 'schedule_mode': self._schedule_mode, 'name': self._name, 'days': days
+            }
+            resp = self._nest._post_put(value, self.object_key, 'OVERWRITE')
+            log.debug('Push response: {}'.format(json.dumps(resp.json(), indent=4, sort_keys=True)))
+
+    def as_day_time_temp_map(self, unit='f'):
+        day_names = calendar.day_name[-1:] + calendar.day_name[:-1]
+        day_time_temp_map = {}
+        for day, (day_num, day_schedule) in zip(day_names, sorted(self._schedule.items())):
+            day_time_temp_map[day] = {
+                secs_to_wall(entry['time']): c2f(entry['temp']) if unit == 'f' else entry['temp']
+                for i, entry in enumerate(day_schedule)
+            }
+        return day_time_temp_map
+
+    def format(self, output_format='table', unit='f'):
+        schedule = self.as_day_time_temp_map(unit)
+        if output_format == 'table':
+            times = set()
+            rows = []
+            for day, time_temp_map in schedule.items():
+                times.update(time_temp_map)
+                row = time_temp_map.copy()
+                row['Day'] = day
+                rows.append(row)
+
+            columns = [SimpleColumn('Day')]
+            columns.extend(SimpleColumn(_time, ftype='.1f') for _time in sorted(times))
+            table = Table(*columns, update_width=True)
+            return table.format_rows(rows, True)
+        else:
+            return Printer(output_format).pformat(schedule, sort_keys=False)
+
+    def print(self, output_format='table', unit='f'):
+        print(self.format(output_format, unit))
+
+    @cached_property
+    def _user_num(self):
+        user_nums = {
+            e['touched_user_id']: e['touched_by']
+            for d, entries in self._schedule.items()
+            for e in entries if 'touched_user_id' in e
+        }
+        return user_nums[self.user_id]
+
+    def _find_last(self, day: int):
+        while (prev_day := _previous_day(day)) != day:
+            if entries := self._schedule.setdefault(prev_day, []):
+                entries.sort(key=lambda e: e['time'])
+                return entries[-1].copy()
+        return None
+
+    def _update_continuations(self):
+        for day in range(7):
+            today = self._schedule.setdefault(day, [])
+            today.sort(key=lambda e: e['time'])
+            if continuation := self._find_last(day):
+                if today[0]['entry_type'] == 'continuation' and today[0]['temp'] != continuation['temp']:
+                    log.debug(f'Updating continuation entry for {day=}')
+                    continuation.pop('touched_user_id', None)
+                    continuation.update(touched_by=1, time=0, entry_type='continuation')
+                    today[0] = continuation
+                else:
+                    log.debug(f'The continuation entry for {day=} is already correct')
+            else:
+                # this is a new schedule - update every day to continue the last entry from today & break
+                continuation = today[-1].copy()
+                continuation.pop('touched_user_id', None)
+                continuation.update(touched_by=1, time=0, entry_type='continuation')
+                for _day in range(7):
+                    log.debug(f'Adding continuation entry for day={_day}')
+                    day_sched = self._schedule.setdefault(_day, [])
+                    if not any(e['time'] == 0 for e in day_sched):
+                        day_sched.insert(0, continuation)
+                break
+
+
+def _previous_day(day: int):
+    return 6 if day == 0 else day - 1
+
+
+def _next_day(day: int):
+    return 0 if day == 6 else day + 1
+
+
+def _continuation_day(day: int) -> int:
+    days = list(range(7))
+    candidates = days[day+1:] + days[:day]
+    return candidates[0]
 
 
 class SessionExpired(Exception):
+    pass
+
+
+class TimeNotFound(ValueError):
     pass

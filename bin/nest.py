@@ -55,18 +55,18 @@ def parser():
     show_parser.add_argument('--unit', '-u', nargs='?', default='f', choices=('f', 'c'), help='Unit (Celsius or Fahrenheit) for functions that support it')
     show_parser.add_argument('--raw', '-r', action='store_true', help='Show the full raw response instead of the processed response (only applies to item=buckets)')
 
-    # schd_parser = parser.add_subparser('action', 'schedule', 'Update the schedule')
-    # schd_add = schd_parser.add_subparser('sub_action', 'add', 'Add entries with the specified schedule')
-    # schd_add.add_argument('cron', help='Cron-format schedule to use')
-    # schd_add.add_argument('temp', type=float, help='The temperature to set at the specified time')
-    # schd_add.add_argument('unit', nargs='?', default='f', choices=('f', 'c'), help='Unit (Celsius or Fahrenheit)')
-    #
-    # schd_rem = schd_parser.add_subparser('sub_action', 'remove', 'Remove entries with the specified schedule')
-    # schd_rem.add_argument('cron', help='Cron-format schedule to use')
-    # schd_rem.add_constant('temp', None)
-    # schd_rem.add_constant('unit', None)
-    #
-    # schd_parser.add_common_arg('--dry_run', '-D', action='store_true', help='Print actions that would be taken instead of taking them')
+    schd_parser = parser.add_subparser('action', 'schedule', 'Update the schedule')
+    schd_add = schd_parser.add_subparser('sub_action', 'add', 'Add entries with the specified schedule')
+    schd_add.add_argument('cron', help='Cron-format schedule to use')
+    schd_add.add_argument('temp', type=float, help='The temperature to set at the specified time')
+    schd_add.add_argument('unit', nargs='?', default='f', choices=('f', 'c'), help='Unit (Celsius or Fahrenheit)')
+
+    schd_rem = schd_parser.add_subparser('sub_action', 'remove', 'Remove entries with the specified schedule')
+    schd_rem.add_argument('cron', help='Cron-format schedule to use')
+    schd_rem.add_constant('temp', None)
+    schd_rem.add_constant('unit', None)
+
+    schd_parser.add_common_arg('--dry_run', '-D', action='store_true', help='Print actions that would be taken instead of taking them')
 
     parser.add_common_arg('--config', '-c', metavar='PATH', default=DEFAULT_CONFIG_PATH, help='Config file location')
     parser.add_common_arg('--reauth', '-A', action='store_true', help='Force re-authentication, even if a cached session exists')
@@ -108,63 +108,16 @@ def main():
         elif item == 'bucket_names':
             data = nest.bucket_types
         elif item == 'schedule':
-            return show_schedule(nest.get_schedule(args.unit), args.format or 'table')
+            return nest.get_schedule().print(args.format or 'table', args.unit)
         else:
             raise ValueError(f'Unexpected {item=!r}')
 
         Printer(args.format or 'yaml').pprint(data)
     elif action == 'schedule':
-        old = nest._get_schedule()
-        new = prepare_schedule(old, args.sub_action, args.cron, args.temp, args.unit)
-        if args.dry_run:
-            log.info('[DRY RUN] Would update schedule:')
-            Printer('json-pretty').pprint(new)
-        else:
-            nest.update_schedule(new)
+        schedule = nest.get_schedule()
+        schedule.update(args.cron, args.sub_action, args.temp, args.unit, args.dry_run)
     else:
         raise ValueError(f'Unexpected {action=!r}')
-
-
-def show_schedule(schedule, output_format):
-    if output_format == 'table':
-        times = set()
-        rows = []
-        for day, time_temp_map in schedule.items():
-            times.update(time_temp_map)
-            row = defaultdict(str)
-            row.update(time_temp_map)
-            row['Day'] = day
-            rows.append(row)
-
-        columns = [SimpleColumn('Day')]
-        columns.extend(SimpleColumn(_time, ftype='.1f') for _time in sorted(times))
-        table = Table(*columns, update_width=True)
-        table.print_rows(rows)
-    else:
-        Printer(output_format).pprint(schedule, sort_keys=False)
-
-
-def prepare_schedule(current, action, cron, temp, unit) -> Dict[str, Dict[str, Dict[str, Any]]]:
-    cron = NestCronSchedule.from_cron(cron)
-    if action == 'remove':
-        for dow, tod_seconds in cron:
-            if dow_current := current.get(dow):
-                rm_row = None
-                for i, row in enumerate(dow_current):
-                    if row['time'] == tod_seconds:
-                        rm_row = i
-                        break
-                if rm_row is not None:
-                    del dow_current[rm_row]
-    elif action == 'add':
-        temp = fahrenheit_to_celsius(temp) if unit == 'f' else temp
-        for dow, tod_seconds in cron:
-            # TODO: Figure out where to insert
-            pass
-    else:
-        raise ValueError(f'Unexpected {action=!r}')
-
-    # TODO: Reformat into the expected POST format
 
 
 if __name__ == '__main__':
