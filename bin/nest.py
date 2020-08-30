@@ -7,19 +7,18 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, PROJECT_ROOT.joinpath('bin').as_posix())
 import _venv  # This will activate the venv, if it exists and is not already active
 
+import json
 import logging
-from collections import defaultdict
-from typing import Dict, Any
+import time
 
 sys.path.append(PROJECT_ROOT.joinpath('lib').as_posix())
 from ds_tools.__version__ import __author_email__, __version__
 from ds_tools.argparsing import ArgParser
 from ds_tools.core import wrap_main
 from ds_tools.logging import init_logging
-from ds_tools.output import Printer, SimpleColumn, Table
-from rpi_hvac.cron import NestCronSchedule
+from ds_tools.output import Printer
+from ds_tools.utils import cdiff
 from rpi_hvac.nest import NestWebClient, DEFAULT_CONFIG_PATH
-from rpi_hvac.utils import fahrenheit_to_celsius
 
 log = logging.getLogger(__name__)
 SHOW_ITEMS = ('energy', 'weather', 'buckets', 'bucket_names', 'schedule')
@@ -67,6 +66,10 @@ def parser():
     schd_rem.add_constant('unit', None)
 
     schd_parser.add_common_arg('--dry_run', '-D', action='store_true', help='Print actions that would be taken instead of taking them')
+
+    full_status_parser = parser.add_subparser('action', 'full_status', 'Show/save the full device+shared status')
+    full_status_parser.add_argument('--path', '-p', help='Location to store status info')
+    full_status_parser.add_argument('--diff', '-d', action='store_true', help='Print a diff of the current status compared to the previous most recent status')
 
     parser.add_common_arg('--config', '-c', metavar='PATH', default=DEFAULT_CONFIG_PATH, help='Config file location')
     parser.add_common_arg('--reauth', '-A', action='store_true', help='Force re-authentication, even if a cached session exists')
@@ -116,6 +119,22 @@ def main():
     elif action == 'schedule':
         schedule = nest.get_schedule()
         schedule.update(args.cron, args.sub_action, args.temp, args.unit, args.dry_run)
+    elif action == 'full_status':
+        path = Path(args.path or '~/etc/nest/status').expanduser()
+        if path.exists() and not path.is_dir():
+            raise ValueError(f'Invalid {path=} - it must be a directory')
+        elif not path.exists():
+            path.mkdir(parents=True)
+
+        data = nest.app_launch(['device', 'shared'])
+        status_path = path.joinpath(f'status_{int(time.time())}.json')
+        log.info(f'Saving status to {status_path}')
+        with status_path.open('w', encoding='utf-8', newline='\n') as f:
+            json.dump(data, f, indent=4, sort_keys=True)
+
+        if args.diff:
+            latest = max((p for p in path.iterdir() if p != status_path), key=lambda p: p.stat().st_mtime)
+            cdiff(latest.as_posix(), status_path.as_posix())
     else:
         raise ValueError(f'Unexpected {action=!r}')
 
