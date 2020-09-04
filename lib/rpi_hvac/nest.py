@@ -518,6 +518,10 @@ class NestWebClient(RequestsClient):
 class NestSchedule:
     def __init__(self, nest: NestWebClient, raw_schedules: List[Dict[str, Any]]):
         """
+        .. important::
+            Nest represents days as 0=Monday ~ 6=Sunday.  This class uses the same values as cron, i.e., 0=Sunday ~
+            6=Saturday, and automatically converts between them where necessary.
+
         :param NestWebClient nest: The :class:`NestWebClient` from which this schedule originated
         :param list raw_schedules: The result of NestWebClient._app_launch(['schedule'])['updated_buckets']
         """
@@ -587,7 +591,7 @@ class NestSchedule:
             'touched_user_id': self.user_id,
             'touched_at': int(time.time()),
         }
-        day_schedule = self._schedule.setdefault(day, [])
+        day_schedule = self._schedule.setdefault(_previous_day(day), [])
         for i, existing in enumerate(day_schedule):
             if existing['time'] == time_of_day:
                 day_schedule[i] = entry
@@ -603,7 +607,7 @@ class NestSchedule:
         if not 0 < time_of_day < 86400:
             raise ValueError(f'Invalid {time_of_day=!r} ({secs_to_wall(time_of_day)}) - must be > 0 and < 86400')
 
-        day_entries = self._schedule.setdefault(day, [])
+        day_entries = self._schedule.setdefault(_previous_day(day), [])
         index = next((i for i, entry in enumerate(day_entries) if entry['time'] == time_of_day), None)
         if index is None:
             times = ', '.join(sorted(secs_to_wall(e['time']) for e in day_entries))
@@ -631,8 +635,8 @@ class NestSchedule:
 
     def as_day_time_temp_map(self, unit='f'):
         day_names = calendar.day_name[-1:] + calendar.day_name[:-1]
-        day_time_temp_map = {}
-        for day, (day_num, day_schedule) in zip(day_names, sorted(self._schedule.items())):
+        day_time_temp_map = {day: None for day in day_names}
+        for day, (day_num, day_schedule) in zip(calendar.day_name, sorted(self._schedule.items())):
             day_time_temp_map[day] = {
                 secs_to_wall(entry['time']): c2f(entry['temp']) if unit == 'f' else entry['temp']
                 for i, entry in enumerate(day_schedule)

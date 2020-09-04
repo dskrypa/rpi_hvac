@@ -117,6 +117,7 @@ def main():
 
         Printer(args.format or 'yaml').pprint(data)
     elif action == 'schedule':
+        # TODO: Save/load profiles, like wfh/normal, summer/spring, etc
         schedule = nest.get_schedule()
         schedule.update(args.cron, args.sub_action, args.temp, args.unit, args.dry_run)
     elif action == 'full_status':
