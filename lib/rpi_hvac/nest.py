@@ -622,7 +622,7 @@ class NestSchedule:
         prefix = '[DRY RUN] Would save' if dry_run else 'Saving'
         log.info(f'{prefix} schedule to {path}')
         with path.open('w', encoding='utf-8', newline='\n') as f:
-            json.dump(self.to_dict(unit), f, indent=4, sort_keys=True)
+            json.dump(self.to_dict(unit), f, indent=4, sort_keys=False)
 
     def update(self, cron_str: str, action: str, temp: float, unit: str = 'c', dry_run: bool = False):
         cron = NestCronSchedule.from_cron(cron_str)
