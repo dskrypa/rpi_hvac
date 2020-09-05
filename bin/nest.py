@@ -54,26 +54,26 @@ def parser():
     show_parser.add_argument('--unit', '-u', default='f', choices=('f', 'c'), help='Unit (Celsius or Fahrenheit) for functions that support it')
     show_parser.add_argument('--raw', '-r', action='store_true', help='Show the full raw response instead of the processed response (only applies to item=buckets)')
 
-    schd_parser = parser.add_subparser('action', 'schedule', 'Update the schedule')
-    schd_add = schd_parser.add_subparser('sub_action', 'add', 'Add entries with the specified schedule')
-    schd_add.add_argument('cron', help='Cron-format schedule to use')
-    schd_add.add_argument('temp', type=float, help='The temperature to set at the specified time')
-    schd_add.add_argument('unit', nargs='?', default='f', choices=('f', 'c'), help='Unit (Celsius or Fahrenheit)')
+    with parser.add_subparser('action', 'schedule', 'Update the schedule') as schd_parser:
+        schd_add = schd_parser.add_subparser('sub_action', 'add', 'Add entries with the specified schedule')
+        schd_add.add_argument('cron', help='Cron-format schedule to use')
+        schd_add.add_argument('temp', type=float, help='The temperature to set at the specified time')
+        schd_add.add_argument('unit', nargs='?', default='f', choices=('f', 'c'), help='Unit (Celsius or Fahrenheit)')
 
-    schd_rem = schd_parser.add_subparser('sub_action', 'remove', 'Remove entries with the specified schedule')
-    schd_rem.add_argument('cron', help='Cron-format schedule to use')
-    schd_rem.add_constant('temp', None)
-    schd_rem.add_constant('unit', None)
+        schd_rem = schd_parser.add_subparser('sub_action', 'remove', 'Remove entries with the specified schedule')
+        schd_rem.add_argument('cron', help='Cron-format schedule to use')
+        schd_rem.add_constant('temp', None)
+        schd_rem.add_constant('unit', None)
 
-    schd_save = schd_parser.add_subparser('sub_action', 'save', 'Save the current schedule to a file')
-    schd_save.add_argument('path', help='The path to a file in which the current schedule should be saved')
-    schd_save.add_argument('--overwrite', '-W', action='store_true', help='Overwrite the file if it already exists')
-    schd_save.add_argument('--unit', '-u', default='f', choices=('f', 'c'), help='Unit (Celsius or Fahrenheit)')
+        schd_save = schd_parser.add_subparser('sub_action', 'save', 'Save the current schedule to a file')
+        schd_save.add_argument('path', help='The path to a file in which the current schedule should be saved')
+        schd_save.add_argument('--overwrite', '-W', action='store_true', help='Overwrite the file if it already exists')
+        schd_save.add_argument('--unit', '-u', default='f', choices=('f', 'c'), help='Unit (Celsius or Fahrenheit)')
 
-    schd_load = schd_parser.add_subparser('sub_action', 'load', 'Load a schedule from a file')
-    schd_load.add_argument('path', help='The path to a file containing the schedule that should be loaded')
+        schd_load = schd_parser.add_subparser('sub_action', 'load', 'Load a schedule from a file')
+        schd_load.add_argument('path', help='The path to a file containing the schedule that should be loaded')
 
-    schd_parser.add_common_arg('--dry_run', '-D', action='store_true', help='Print actions that would be taken instead of taking them')
+        schd_parser.add_common_arg('--dry_run', '-D', action='store_true', help='Print actions that would be taken instead of taking them')
 
     full_status_parser = parser.add_subparser('action', 'full_status', 'Show/save the full device+shared status')
     full_status_parser.add_argument('--path', '-p', help='Location to store status info')
