@@ -18,7 +18,7 @@ from ds_tools.core import wrap_main
 from ds_tools.logging import init_logging
 from ds_tools.output import Printer
 from ds_tools.utils import cdiff
-from rpi_hvac.nest import NestWebClient, DEFAULT_CONFIG_PATH
+from rpi_hvac.nest import NestWebClient, DEFAULT_CONFIG_PATH, NestSchedule
 
 log = logging.getLogger(__name__)
 SHOW_ITEMS = ('energy', 'weather', 'buckets', 'bucket_names', 'schedule')
@@ -51,7 +51,7 @@ def parser():
     show_parser.add_argument('item', choices=SHOW_ITEMS, help='The information to show')
     show_parser.add_argument('buckets', nargs='*', help='The buckets to show (only applies to item=buckets)')
     show_parser.add_argument('--format', '-f', choices=Printer.formats, help='Output format')
-    show_parser.add_argument('--unit', '-u', nargs='?', default='f', choices=('f', 'c'), help='Unit (Celsius or Fahrenheit) for functions that support it')
+    show_parser.add_argument('--unit', '-u', default='f', choices=('f', 'c'), help='Unit (Celsius or Fahrenheit) for functions that support it')
     show_parser.add_argument('--raw', '-r', action='store_true', help='Show the full raw response instead of the processed response (only applies to item=buckets)')
 
     schd_parser = parser.add_subparser('action', 'schedule', 'Update the schedule')
@@ -64,6 +64,14 @@ def parser():
     schd_rem.add_argument('cron', help='Cron-format schedule to use')
     schd_rem.add_constant('temp', None)
     schd_rem.add_constant('unit', None)
+
+    schd_save = schd_parser.add_subparser('sub_action', 'save', 'Save the current schedule to a file')
+    schd_save.add_argument('path', help='The path to a file in which the current schedule should be saved')
+    schd_save.add_argument('--overwrite', '-W', action='store_true', help='Overwrite the file if it already exists')
+    schd_save.add_argument('--unit', '-u', default='f', choices=('f', 'c'), help='Unit (Celsius or Fahrenheit)')
+
+    schd_load = schd_parser.add_subparser('sub_action', 'load', 'Load a schedule from a file')
+    schd_load.add_argument('path', help='The path to a file containing the schedule that should be loaded')
 
     schd_parser.add_common_arg('--dry_run', '-D', action='store_true', help='Print actions that would be taken instead of taking them')
 
@@ -117,9 +125,15 @@ def main():
 
         Printer(args.format or 'yaml').pprint(data)
     elif action == 'schedule':
-        # TODO: Save/load profiles, like wfh/normal, summer/spring, etc
-        schedule = nest.get_schedule()
-        schedule.update(args.cron, args.sub_action, args.temp, args.unit, args.dry_run)
+        if args.sub_action in ('add', 'remove'):
+            schedule = nest.get_schedule()
+            schedule.update(args.cron, args.sub_action, args.temp, args.unit, args.dry_run)
+        elif args.sub_action == 'save':
+            schedule = nest.get_schedule()
+            schedule.save(args.path, args.unit, args.overwrite, args.dry_run)
+        elif args.sub_action == 'load':
+            schedule = NestSchedule.from_file(nest, args.path)
+            schedule.push(args.dry_run)
     elif action == 'full_status':
         path = Path(args.path or '~/etc/nest/status').expanduser()
         if path.exists() and not path.is_dir():

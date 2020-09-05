@@ -66,9 +66,19 @@ class NestWebClient(RequestsClient):
         self._email = self._get_config('credentials', 'email', 'email address', email, required=True)
         self._session_info = None
         self._session_expiry = None
-        self.user_id = None
+        self._user_id = None
         self._nest_host_port = ('home.nest.com', None)
         self._serial = self._get_config('device', 'serial', 'thermostat serial number', serial)
+
+    @property
+    def user_id(self):
+        if self._user_id is None:
+            self._maybe_refresh_login()
+        return self._user_id
+
+    @user_id.setter
+    def user_id(self, value):
+        self._user_id = value
 
     @cached_property
     def _config(self) -> ConfigParser:
@@ -389,6 +399,10 @@ class NestWebClient(RequestsClient):
             payload = {'objects': [{'object_key': obj_key, 'op': op or 'MERGE', 'value': value}]}
             return self.post('v5/put', json=payload)
 
+    def get_mode(self):
+        resp = self.app_launch(['shared'])
+        return resp[self._serial]['shared']['target_temperature_type']
+
     def set_temp_range(self, low, high, unit='f'):
         """
         :param float low: Minimum temperature to maintain in Celsius (heat will turn on if the temp drops below this)
@@ -534,8 +548,6 @@ class NestSchedule:
                 break
         else:
             raise ValueError(f'Unable to find an entry for {self.object_key=!r} in the provided raw_schedule')
-        self._rev = self._raw['object_revision']
-        self._timestamp = self._raw['object_timestamp']
         info = self._raw['value']
         self._ver = info['ver']
         self._schedule_mode = info['schedule_mode']
@@ -543,6 +555,74 @@ class NestSchedule:
         self._schedule = {
             int(day): [entry for i, entry in sorted(sched.items())] for day, sched in sorted(info['days'].items())
         }
+
+    @classmethod
+    def from_file(cls, nest: NestWebClient, path: Union[str, Path]) -> 'NestSchedule':
+        path = Path(path)
+        if not path.is_file():
+            raise ValueError(f'Invalid schedule path: {path}')
+
+        with path.open('r', encoding='utf-8') as f:
+            schedule = json.load(f)
+
+        return cls.from_dict(nest, schedule)
+
+    @classmethod
+    def from_dict(cls, nest: NestWebClient, schedule: Dict[str, Any]) -> 'NestSchedule':
+        user_id = f'user.{nest.user_id}'
+        meta = schedule['meta']
+        user_num = meta['user_nums'][user_id]
+        _days = schedule['days']
+        convert = meta['unit'] == 'f'
+        days = {}
+        for day_num, day in enumerate(calendar.day_name):
+            if day_schedule := _days.get(day):
+                days[day_num] = {
+                    i: {
+                        'temp': f2c(temp) if convert else temp,
+                        'touched_by': user_num,
+                        'time': wall_to_secs(tod_str),
+                        'touched_tzo': -14400,
+                        'type': meta['mode'],
+                        'entry_type': 'setpoint',
+                        'touched_user_id': user_id,
+                        'touched_at': int(time.time()),
+                    }
+                    for i, (tod_str, temp) in enumerate(day_schedule.items())
+                }
+            else:
+                days[day_num] = {}
+
+        raw_schedule = {
+            'object_key': f'schedule.{nest.serial}',
+            'value': {'ver': meta['ver'], 'schedule_mode': meta['mode'], 'name': meta['name'], 'days': days},
+        }
+        return cls(nest, [raw_schedule])
+
+    def to_dict(self, unit='f'):
+        schedule = {
+            'meta': {
+                'ver': self._ver,
+                'mode': self._schedule_mode,
+                'name': self._name,
+                'unit': unit,
+                'user_nums': self.user_nums,
+            },
+            'days': self.as_day_time_temp_map(unit),
+        }
+        return schedule
+
+    def save(self, path: Union[str, Path], unit='f', overwrite: bool = False, dry_run: bool = False):
+        path = Path(path)
+        if path.is_file() and not overwrite:
+            raise ValueError(f'Path already exists: {path}')
+        elif not path.parent.exists() and not dry_run:
+            path.parent.mkdir(parents=True)
+
+        prefix = '[DRY RUN] Would save' if dry_run else 'Saving'
+        log.info(f'{prefix} schedule to {path}')
+        with path.open('w', encoding='utf-8', newline='\n') as f:
+            json.dump(self.to_dict(unit), f, indent=4, sort_keys=True)
 
     def update(self, cron_str: str, action: str, temp: float, unit: str = 'c', dry_run: bool = False):
         cron = NestCronSchedule.from_cron(cron_str)
@@ -617,7 +697,17 @@ class NestSchedule:
         day_entries.pop(index)
         self._update_continuations()
 
+    def _update_mode(self, dry_run: bool = False):
+        mode = self._nest.get_mode().lower()
+        sched_mode = self._schedule_mode.lower()
+        if sched_mode != mode:
+            prefix = '[DRY RUN] Would update' if dry_run else 'Updating'
+            log.info(f'{prefix} mode from {mode} to {sched_mode}')
+            if not dry_run:
+                self._nest.set_mode(sched_mode)
+
     def push(self, dry_run: bool = False):
+        self._update_mode(dry_run)
         days = {
             str(day): {str(i): entry for i, entry in enumerate(entries)}
             for day, entries in sorted(self._schedule.items())
@@ -636,9 +726,10 @@ class NestSchedule:
     def as_day_time_temp_map(self, unit='f'):
         day_names = calendar.day_name[-1:] + calendar.day_name[:-1]
         day_time_temp_map = {day: None for day in day_names}
+        convert = unit == 'f'
         for day, (day_num, day_schedule) in zip(calendar.day_name, sorted(self._schedule.items())):
             day_time_temp_map[day] = {
-                secs_to_wall(entry['time']): c2f(entry['temp']) if unit == 'f' else entry['temp']
+                secs_to_wall(entry['time']): c2f(entry['temp']) if convert else entry['temp']
                 for i, entry in enumerate(day_schedule)
             }
         return day_time_temp_map
@@ -665,13 +756,16 @@ class NestSchedule:
         print(self.format(output_format, unit))
 
     @cached_property
-    def _user_num(self):
-        user_nums = {
+    def user_nums(self):
+        return {
             e['touched_user_id']: e['touched_by']
             for d, entries in self._schedule.items()
             for e in entries if 'touched_user_id' in e
         }
-        return user_nums[self.user_id]
+
+    @cached_property
+    def _user_num(self):
+        return self.user_nums[self.user_id]
 
     def _find_last(self, day: int):
         while (prev_day := _previous_day(day)) != day:
