@@ -729,7 +729,7 @@ class NestSchedule:
         convert = unit == 'f'
         for day, (day_num, day_schedule) in zip(calendar.day_name, sorted(self._schedule.items())):
             day_time_temp_map[day] = {
-                secs_to_wall(entry['time']): c2f(entry['temp']) if convert else entry['temp']
+                secs_to_wall(entry['time']): round(c2f(entry['temp']), 2) if convert else entry['temp']
                 for i, entry in enumerate(day_schedule)
             }
         return day_time_temp_map
