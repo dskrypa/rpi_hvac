@@ -99,11 +99,14 @@ def main():
         if args.details:
             Printer(args.format).pprint(status)
         else:
+            current = status['current_temperature']
+            target = status['target_temperature']
+            target_color = 14 if target < current else 9
             Table.auto_print_rows([{
                 'Mode': status['current_schedule_mode'],
                 'Humidity': status['current_humidity'],
-                'Temperature': colored('{:>11.1f}'.format(status['current_temperature']), 11),
-                'Target': colored('{:>6.1f}'.format(status['target_temperature']), 14),
+                'Temperature': colored('{:>11.1f}'.format(current), 11),
+                'Target': colored('{:>6.1f}'.format(target), target_color),
                 'Target (low)': status['target_temperature_low'],
                 'Target (high)': status['target_temperature_high'],
             }])
