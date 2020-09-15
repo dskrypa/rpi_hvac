@@ -16,7 +16,7 @@ from ds_tools.__version__ import __author_email__, __version__
 from ds_tools.argparsing import ArgParser
 from ds_tools.core import wrap_main
 from ds_tools.logging import init_logging
-from ds_tools.output import Printer
+from ds_tools.output import Printer, Table, colored
 from ds_tools.utils import cdiff
 from rpi_hvac.nest import NestWebClient, DEFAULT_CONFIG_PATH, NestSchedule
 
@@ -30,6 +30,7 @@ def parser():
     status_parser = parser.add_subparser('action', 'status', 'Show current status')
     status_parser.add_argument('--format', '-f', default='yaml', choices=Printer.formats, help='Output format')
     status_parser.add_argument('--celsius', '-C', action='store_true', help='Output temperatures in Celsius (default: Fahrenheit)')
+    status_parser.add_argument('--details', '-d', action='store_true', help='Show more detailed information')
 
     temp_parser = parser.add_subparser('action', 'temp', 'Set a new temperature')
     temp_parser.add_argument('temp', type=float, help='The temperature to set')
@@ -94,7 +95,18 @@ def main():
 
     action = args.action
     if action == 'status':
-        Printer(args.format).pprint(nest.get_state(fahrenheit=not args.celsius))
+        status = nest.get_state(fahrenheit=not args.celsius)
+        if args.details:
+            Printer(args.format).pprint(status)
+        else:
+            Table.auto_print_rows([{
+                'Mode': status['current_schedule_mode'],
+                'Humidity': status['current_humidity'],
+                'Temperature': colored('{:>11.1f}'.format(status['current_temperature']), 11),
+                'Target': colored('{:>6.1f}'.format(status['target_temperature']), 14),
+                'Target (low)': status['target_temperature_low'],
+                'Target (high)': status['target_temperature_high'],
+            }])
     elif action == 'temp':
         nest.set_temp(args.temp, unit=args.unit)
     elif action == 'range':
