@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Nest Controller</title>
+    <link rel="stylesheet" type="text/css" href="{{ url_for('static', filename='style.css') }}" />
+</head>
+<body>
+{% block body %}
+    {% if error %}
+        {% if error_code %}
+            <br/>
+            <h2>{{ error_code }}</h2>
+        {% endif %}
+        <br/>
+        <div class="error">{{ error|safe }}</div>
+    {% else %}
+        <h1>{{ location }}</h1>
+        <table><tbody>
+            <tr><th>Field</th><th>Value</th></tr>
+            <tr><td>mode</td><td>{{ mode }}</td></tr>
+            <tr><td>humidity</td><td>{{ humidity }}</td></tr>
+            <tr><td>temperature</td><td>{{ temperature }}</td></tr>
+            <tr><td>target</td><td>{{ target }}</td></tr>
+            <tr><td>target_low</td><td>{{ target_low }}</td></tr>
+            <tr><td>target_high</td><td>{{ target_high }}</td></tr>
+        </tbody></table>
+    {% endif %}
+{% endblock %}
+</body>
+</html>
