@@ -25,7 +25,7 @@ try:
 except ImportError:
     keyring = None
 
-from ds_tools.core.filesystem import get_user_cache_dir
+from ds_tools.fs.paths import get_user_cache_dir
 from ds_tools.input import get_input
 from ds_tools.output import Printer, SimpleColumn, Table
 from requests_client import RequestsClient, USER_AGENT_CHROME
