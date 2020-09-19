@@ -17,7 +17,7 @@ from ds_tools.argparsing import ArgParser
 from ds_tools.core import wrap_main
 from ds_tools.logging import init_logging
 from ds_tools.output import Printer, Table, colored
-from ds_tools.utils import cdiff
+from ds_tools.utils.diff import cdiff
 from rpi_hvac.nest import NestWebClient, DEFAULT_CONFIG_PATH, NestSchedule
 
 log = logging.getLogger(__name__)
