@@ -21,8 +21,8 @@ sys.path.append(BASE_DIR.joinpath('lib').as_posix())
 from ds_tools.__version__ import __author_email__, __version__
 from ds_tools.argparsing import ArgParser
 from ds_tools.core import wrap_main
-from rpi_hvac.constants import NEST_WHERE_MAP
-from rpi_hvac.nest import NestWebClient, DEFAULT_CONFIG_PATH
+from rpi_hvac.nest.constants import NEST_WHERE_MAP
+from rpi_hvac.nest.client import NestWebClient, DEFAULT_CONFIG_PATH
 
 log = logging.getLogger(__name__)
 app = Flask(

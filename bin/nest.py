@@ -87,7 +87,8 @@ def main():
     args = parser().parse_args(req_subparser_value=True)
     init_logging(args.verbose, log_path=None, names_add=['rpi_hvac'])
 
-    from rpi_hvac.nest import NestWebClient, NestSchedule
+    from rpi_hvac.nest.client import NestWebClient
+    from rpi_hvac.nest.schedule import NestSchedule
     nest = NestWebClient(config_path=args.config, reauth=args.reauth)
 
     action = args.action
