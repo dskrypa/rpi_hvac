@@ -17,8 +17,9 @@ class NestCronSchedule(CronSchedule):
     @classmethod
     def from_cron(cls, cron_str: str) -> 'NestCronSchedule':
         cron = super().from_cron(cron_str)
-        if any(not any(getattr(cron, attr).values()) for attr in ('_second', '_day', '_month', '_weeks')):
-            raise ValueError('Nest schedules only support minutes, hours, and days of the week')
+        if attr := next((attr for attr in ('day', 'month', 'week') if not getattr(cron, attr).all()), None):
+            bad = getattr(cron, attr)
+            raise ValueError(f'Nest schedules only support minutes, hours, and days of the week - {bad=!r}')
         # noinspection PyTypeChecker
         return cron
 
@@ -26,10 +27,7 @@ class NestCronSchedule(CronSchedule):
         """
         :return iterator: Iterator that yields tuples of (day of week, time of day [seconds])
         """
-        for dow, dow_enabled in self._dow.items():
-            if dow_enabled:
-                for hour, hour_enabled in self._hour.items():
-                    if hour_enabled:
-                        for minute, min_enabled in self._minute.items():
-                            if min_enabled:
-                                yield dow, (hour * 60 + minute) * 60
+        for dow in self.dow:
+            for hour in self.hour:
+                for minute in self.minute:
+                    yield dow, (hour * 60 + minute) * 60
