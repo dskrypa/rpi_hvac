@@ -361,7 +361,7 @@ class NestWebClient(RequestsClient):
             'device': (
                 'current_humidity', 'fan_current_speed', 'target_humidity', 'current_schedule_mode', 'fan_capabilities',
                 'time_to_target', 'fan_cooling_enabled', 'fan_cooling_readiness', 'fan_cooling_state',
-                'fan_current_speed', 'fan_schedule_speed', 'fan_timer_duration', 'fan_timer_speed', 'fan_timer_timeout',
+                'fan_schedule_speed', 'fan_timer_duration', 'fan_timer_speed', 'fan_timer_timeout',
             )
         }
 

@@ -14,7 +14,7 @@ from ds_tools.__version__ import __author_email__, __version__
 from ds_tools.argparsing import ArgParser
 from ds_tools.core import wrap_main
 from ds_tools.logging import init_logging
-from ds_tools.output import Printer, Table, colored
+from ds_tools.output import Printer, Table, colored, SimpleColumn
 
 log = logging.getLogger(__name__)
 SHOW_ITEMS = ('energy', 'weather', 'buckets', 'bucket_names', 'schedule')
@@ -70,6 +70,10 @@ def parser():
         schd_load = schd_parser.add_subparser('sub_action', 'load', 'Load a schedule from a file')
         schd_load.add_argument('path', help='The path to a file containing the schedule that should be loaded')
 
+        schd_show = schd_parser.add_subparser('sub_action', 'show', 'Show the current schedule')
+        schd_show.add_argument('--format', '-f', choices=Printer.formats, help='Output format')
+        schd_show.add_argument('--unit', '-u', default='f', choices=('f', 'c'), help='Unit (Celsius or Fahrenheit)')
+
         schd_parser.add_common_arg('--dry_run', '-D', action='store_true', help='Print actions that would be taken instead of taking them')
 
     full_status_parser = parser.add_subparser('action', 'full_status', 'Show/save the full device+shared status')
@@ -97,17 +101,32 @@ def main():
         if args.details:
             Printer(args.format).pprint(status)
         else:
+            mode = status['current_schedule_mode'].upper()
+            tbl = Table(
+                SimpleColumn('Humidity'),
+                SimpleColumn('Mode', len(mode)),
+                SimpleColumn('Fan', 7),
+                SimpleColumn('Target', display=mode != 'RANGE'),
+                SimpleColumn('Target (low)', display=mode == 'RANGE'),
+                SimpleColumn('Target (high)', display=mode == 'RANGE'),
+                SimpleColumn('Temperature'),
+                fix_ansi_width=True,
+            )
+
             current = status['current_temperature']
             target = status['target_temperature']
-            target_color = 14 if target < current else 9
-            Table.auto_print_rows([{
-                'Mode': status['current_schedule_mode'],
+            target_lo = status['target_temperature_low']
+            target_hi = status['target_temperature_high']
+            status_table = {
+                'Mode': colored(mode, 14 if mode == 'COOL' else 13 if mode == 'RANGE' else 9),
                 'Humidity': status['current_humidity'],
                 'Temperature': colored('{:>11.1f}'.format(current), 11),
-                'Target': colored('{:>6.1f}'.format(target), target_color),
-                'Target (low)': status['target_temperature_low'],
-                'Target (high)': status['target_temperature_high'],
-            }])
+                'Fan': colored('OFF', 8) if status['fan_current_speed'] == 'off' else colored('RUNNING', 10),
+                'Target (low)': colored('{:>12.1f}'.format(target_lo), 14 if target_lo < current else 9),
+                'Target (high)': colored('{:>13.1f}'.format(target_hi), 14 if target_hi < current else 9),
+                'Target': colored('{:>6.1f}'.format(target), 14 if target < current else 9),
+            }
+            tbl.print_rows([status_table])
     elif action == 'temp':
         nest.set_temp(args.temp, unit=args.unit)
     elif action == 'range':
@@ -147,6 +166,8 @@ def main():
         elif args.sub_action == 'load':
             schedule = NestSchedule.from_file(nest, args.path)
             schedule.push(args.dry_run)
+        elif args.sub_action == 'show':
+            nest.get_schedule().print(args.format or 'table', args.unit)
     elif action == 'full_status':
         import json
         import time

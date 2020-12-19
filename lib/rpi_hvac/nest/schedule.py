@@ -248,6 +248,8 @@ class NestSchedule:
             return Printer(output_format).pformat(schedule, sort_keys=False)
 
     def print(self, output_format='table', unit='f'):
+        if output_format == 'table':
+            print(f'Schedule name={self._name!r} mode={self._schedule_mode!r} ver={self._ver!r}\n')
         print(self.format(output_format, unit))
 
     @cached_property
