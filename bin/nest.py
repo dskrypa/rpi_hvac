@@ -31,6 +31,7 @@ def parser():
     temp_parser = parser.add_subparser('action', 'temp', 'Set a new temperature')
     temp_parser.add_argument('temp', type=float, help='The temperature to set')
     temp_parser.add_argument('unit', nargs='?', default='f', choices=('f', 'c'), help='Unit (Celsius or Fahrenheit)')
+    temp_parser.add_argument('--only_set', '-s', action='store_true', help='Only set the temperature - do not force it to run if the delta is < 0.5 degrees')
 
     range_parser = parser.add_subparser('action', 'range', 'Set a new temperature range')
     range_parser.add_argument('low', type=float, help='The low temperature to set')
@@ -128,7 +129,7 @@ def main():
             }
             tbl.print_rows([status_table])
     elif action == 'temp':
-        nest.set_temp(args.temp, unit=args.unit)
+        nest.set_temp(args.temp, unit=args.unit, force_run=not args.only_set)
     elif action == 'range':
         nest.set_temp_range(args.low, args.high, unit=args.unit)
     elif action == 'mode':

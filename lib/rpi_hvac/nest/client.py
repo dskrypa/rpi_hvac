@@ -418,17 +418,43 @@ class NestWebClient(RequestsClient):
         resp = self._post_put({'target_temperature_low': low, 'target_temperature_high': high})
         return resp.json()
 
-    def set_temp(self, temp, unit='f'):
+    def set_temp(self, temp: float, unit: str = 'f', force_run: bool = False):
         """
         :param float temp: The target temperature to maintain in Celsius
         :param str unit: Either 'f' or 'c' for fahrenheit/celsius
+        :param bool force_run: If the delta between the new temp and the old temp is < 0.5 degrees, then first set a
+          temp that would trigger the Nest to run, then switch to the desired target temp
         :return: The parsed response
         """
         unit = unit.lower()
-        if unit[0] == 'f':
+        fahrenheit = unit[0] == 'f'
+        if fahrenheit:
             temp = f2c(temp)
         elif unit[0] != 'c':
             raise ValueError('Unit must be either \'f\' or \'c\' for fahrenheit/celsius')
+        if force_run:
+            status = self.get_state(fahrenheit=False)
+            mode = status['current_schedule_mode'].upper()
+            current = status['current_temperature']
+            if mode == 'COOL':
+                delta = current - temp
+                if current > temp and delta < 0.5:
+                    tmp = current - 0.6
+                    log.debug(f'Setting temporary temp={tmp:.1f}')
+                    resp = self._post_put({'target_temperature': tmp})
+                    time.sleep(3)
+            elif mode == 'HEAT':
+                delta = temp - current
+                log.debug(f'{current=} {temp=} {delta=} {fahrenheit=}')
+                if current < temp and delta < 0.5:
+                    tmp = current + 0.6
+                    log.debug(f'Setting temporary temp={tmp:.1f}')
+                    resp = self._post_put({'target_temperature': tmp})
+                    time.sleep(3)
+            else:
+                log.log(19, f'Unable to force unit to run for {mode=!r}')
+
+        log.debug(f'Setting requested temp={temp:.1f}')
         resp = self._post_put({'target_temperature': temp})
         return resp.json()
 
