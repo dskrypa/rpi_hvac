@@ -12,7 +12,7 @@ import logging
 sys.path.append(PROJECT_ROOT.joinpath('lib').as_posix())
 from ds_tools.__version__ import __author_email__, __version__
 from ds_tools.argparsing import ArgParser
-from ds_tools.core import wrap_main
+from ds_tools.core.main import wrap_main
 from ds_tools.logging import init_logging
 from ds_tools.output import Printer, Table, colored, SimpleColumn
 
@@ -113,6 +113,13 @@ def main():
                 SimpleColumn('Temperature'),
                 fix_ansi_width=True,
             )
+
+            """
+            While heating:
+                hvac_ac_state: false
+                hvac_fan_state: true
+                hvac_heater_state: true
+            """
 
             current = status['current_temperature']
             target = status['target_temperature']

@@ -20,7 +20,7 @@ BASE_DIR = Path(__file__).resolve().parents[1]
 sys.path.append(BASE_DIR.joinpath('lib').as_posix())
 from ds_tools.__version__ import __author_email__, __version__
 from ds_tools.argparsing import ArgParser
-from ds_tools.core import wrap_main
+from ds_tools.core.main import wrap_main
 from rpi_hvac.nest.constants import NEST_WHERE_MAP
 from rpi_hvac.nest.client import NestWebClient, DEFAULT_CONFIG_PATH
 
