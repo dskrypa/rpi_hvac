@@ -39,7 +39,7 @@ def main():
     parser.add_argument('--verbose', '-v', action='count', help='Print more verbose log info (may be specified multiple times to increase verbosity)')
     parser.add_argument('--max_retries', '-r', type=int, default=4, help='Maximum read retries allowed for a given request')
     args = parser.parse_args()
-    init_logging(args.verbose, names=None, log_path=None)
+    init_logging(args.verbose or 2, names=None, log_path=None)
 
     if platform.system() == 'Windows':
         from ds_tools.flasks.socketio_server import SocketIOServer as Server

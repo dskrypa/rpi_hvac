@@ -42,13 +42,15 @@ def main():
     delay = args.delay
     url = f'http://{args.server}/read'
     session = Session()
-    last_temp = 0
+    last_temp = 100
     last_nest_check = 0
     nest_check_freq = 180  # 3 minutes
     # nest_status = None
     mode, running, current, target = None, False, None, None
     while True:
+        log.debug(f'GET -> {url}')
         resp = session.get(url)
+        log.debug(f'Response: {resp} - {resp.text}')
         if not resp.ok:
             log.error(f'Error reading temperature from server: {resp} - {resp.text}')
         else:
@@ -61,16 +63,20 @@ def main():
             next_nest_check = last_nest_check + nest_check_freq - time.monotonic()
             if increasing and next_nest_check <= 0:
                 next_nest_check = 'updated'
+                last_nest_check = time.monotonic()
                 nest_status = nest.get_state(fahrenheit=not args.celsius)
                 running = nest_status['fan_current_speed'] == 'off'
                 mode = nest_status['current_schedule_mode'].upper()
                 current = nest_status['current_temperature']
                 target = nest_status['target_temperature']
 
-            log.info(
-                f'{temp_f=:.2f} F / {temp_c=:.2f} C - {increasing=} | {humidity=:.2f}%'
-                f' | Nest {mode=} {running=} {current=:.2f} {target=:.2f} (next check in: {next_nest_check} s)'
-            )
+            message = f'{temp_f=:.2f} F / {temp_c=:.2f} C - {increasing=} | {humidity=:.2f}%'
+            if mode is not None:
+                message += f' | Nest {mode=} {running=} {current=:.2f} {target=:.2f} (next check in: {next_nest_check} s)'
+            else:
+                message += ' | Nest mode=? running=? current=? target=? (next check in: ? s)'
+
+            log.info(message)
 
         time.sleep(delay)
 
