@@ -30,6 +30,7 @@ def parser():
     parser.add_argument('--celsius', '-C', action='store_true', help='Output temperatures in Celsius (default: Fahrenheit)')
     parser.add_argument('--config', '-c', metavar='PATH', default='~/.config/nest.cfg', help='Config file location')
     parser.add_argument('--reauth', '-A', action='store_true', help='Force re-authentication, even if a cached session exists')
+    parser.add_argument('--force_check_freq', '-f', type=int, help='Frequency in minutes to force a Nest status check, even if temp is not increasing')
     parser.include_common_args('verbosity')
     return parser
 
@@ -39,20 +40,33 @@ def main():
     args = parser().parse_args(req_subparser_value=True)
     init_logging(args.verbose, names_add=['rpi_hvac'], entry_fmt=ENTRY_FMT_DETAILED)
 
-    monitor = TempMonitor(args.server, args.delay, args.config, args.reauth, celsius=args.celsius)
+    monitor = TempMonitor(
+        args.server, args.delay, args.config, args.reauth, celsius=args.celsius, force_check_freq=args.force_check_freq
+    )
     monitor.run()
 
 
 class TempMonitor:
     def __init__(
-        self, server: str, delay: int, nest_config, nest_reauth, nest_check_freq: int = 180, celsius: bool = False
+        self,
+        server: str,
+        delay: int,
+        nest_config,
+        nest_reauth,
+        nest_check_freq: int = 180,
+        force_check_freq: int = None,
+        celsius: bool = False,
     ):
         self.url = f'http://{server}/read'
         self.session = Session()
         self.nest = NestWebClient(config_path=nest_config, reauth=nest_reauth)
         self.nest_check_freq = timedelta(seconds=nest_check_freq)
+        if force_check_freq and force_check_freq < 1:
+            raise ValueError('--force_check_freq / -f must be a positive integer')
+        self.force_check_freq = timedelta(minutes=force_check_freq) if force_check_freq else None
         self.last_temp = 100
-        self.last_nest_check = datetime.now(TZ_LOCAL) - timedelta(seconds=nest_check_freq + 1)
+        init_td = max(self.nest_check_freq, self.force_check_freq) if force_check_freq else self.nest_check_freq
+        self.last_nest_check = datetime.now(TZ_LOCAL) - init_td - timedelta(seconds=1)
         self.delay = delay
         self.celsius = celsius
         self.nest_mode = None
@@ -80,21 +94,24 @@ class TempMonitor:
         self.nest_current = nest_status['current_temperature']
         self.nest_target = nest_status['target_temperature']
 
+    def maybe_update_nest_status(self, increasing: bool):
+        last_td = datetime.now(TZ_LOCAL) - self.last_nest_check
+        forced_freq = self.force_check_freq
+        if (increasing and last_td >= self.nest_check_freq) or (forced_freq is not None and last_td >= forced_freq):
+            self.update_nest_status()
+
     def _process_status(self, data):
         humidity, temp_c = data['humidity'], data['temperature']
         temp_f = temp_c * 9 / 5 + 32
         increasing = temp_c > self.last_temp
         self.last_temp = temp_c
-
-        next_nest_check = self.last_nest_check + self.nest_check_freq - datetime.now(TZ_LOCAL)
-        if increasing and next_nest_check.total_seconds() <= 0:
-            self.update_nest_status()
-
+        self.maybe_update_nest_status(increasing)
         message = f'{temp_f=:.2f} F / {temp_c=:.2f} C - {increasing=} | {humidity=:.2f}%'
         if self.nest_mode is not None:
+            last = self.last_nest_check.strftime('%Y-%m-%d %H:%M:%S %Z')
             message += (
                 f' | Nest mode={self.nest_mode} running={self.nest_running} current={self.nest_current:.2f}'
-                f' target={self.nest_target:.2f} (last check: {self.last_nest_check.isoformat(" ")})'
+                f' target={self.nest_target:.2f} (last check: {last})'
             )
         else:
             message += ' | Nest mode=? running=? current=? target=? (last check: -)'
