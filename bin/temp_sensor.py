@@ -23,7 +23,7 @@ from werkzeug.http import HTTP_STATUS_CODES as codes
 BASE_DIR = Path(__file__).resolve().parents[1]
 sys.path.append(BASE_DIR.joinpath('lib').as_posix())
 from ds_tools.logging import init_logging
-from rpi_hvac.rpi import Dht22Sensor
+from rpi_hvac.rpi import Dht22Sensor, SensorReadFailed
 
 log = logging.getLogger(__name__)
 
@@ -49,12 +49,7 @@ def main():
     global SENSOR
     SENSOR = Dht22Sensor(args.max_retries)
 
-    log_cfg = {
-        'log_path': f'/var/tmp/{getuser()}/temp_sensor_logs/server-{{pid}}.log',
-        'verbose': args.verbose,
-        'pid': True,
-    }
-
+    log_cfg = {'log_path': f'/var/tmp/{getuser()}/temp_sensor_logs/server-{{pid}}.log', 'verbose': True, 'pid': True}
     host = socket.gethostname() if args.use_hostname else None
     server = Server(app, args.port, host, log_cfg=log_cfg)
     server.start_server()
@@ -62,9 +57,14 @@ def main():
 
 @app.route('/read')
 def read_sensors():
-    # humidity, temp = dht.read_retry(dht.DHT22, 4)
-    humidity, temp = SENSOR.read()
-    return jsonify({'humidity': humidity, 'temperature': temp})
+    try:
+        humidity, temp = SENSOR.read()
+    except SensorReadFailed as e:
+        resp = jsonify({'error': str(e)})
+        resp.status_code = 503
+        return resp
+    else:
+        return jsonify({'humidity': humidity, 'temperature': temp})
 
 
 class ResponseException(Exception):

@@ -38,7 +38,8 @@ class Dht22Sensor:
                 retries -= 1
                 last_exc = e
             else:
-                return sensor._humidity, sensor._temperature
+                if sensor._humidity is not None:
+                    return sensor._humidity, sensor._temperature
         raise SensorReadFailed(f'Failed to read sensor - {last_exc}')
 
 
