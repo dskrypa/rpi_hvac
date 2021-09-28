@@ -20,8 +20,8 @@ from pathlib import Path
 from flask import Flask, jsonify
 from werkzeug.http import HTTP_STATUS_CODES as codes
 
-flask_dir = Path(__file__).resolve().parent
-sys.path.append(flask_dir.parents[1].as_posix())
+BASE_DIR = Path(__file__).resolve().parents[1]
+sys.path.append(BASE_DIR.joinpath('lib').as_posix())
 from ds_tools.logging import init_logging
 from rpi_hvac.rpi import Dht22Sensor
 

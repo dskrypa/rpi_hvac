@@ -22,7 +22,7 @@ else
     py_path="$proj_root"/venv/bin/python
 fi
 export VIRTUAL_ENV
-echo $VIRTUAL_ENV
+echo "Using VIRTUAL_ENV=$VIRTUAL_ENV"
 
 # unset PYTHONHOME if set
 # this will fail if PYTHONHOME is set to the empty string (which is bad anyway)

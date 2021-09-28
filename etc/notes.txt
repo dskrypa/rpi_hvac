@@ -1,0 +1,71 @@
+Update installed packages via CLI
+
+Note: If there is junk installed that you don't care about, uninstall those packages first to prevent them from slowing
+down the update.
+
+Steps:
+
+    sudo apt update
+    sudo apt full-upgrade
+    sudo apt clean
+
+
+To update Raspberry Pi firmware:
+
+    sudo apt install rpi-update
+    sudo rpi-update
+
+------------------------------------------------------------------------------------------------------------------------
+
+Compiling Python 3.9 from source
+
+*IMPORTANT*: The latest version of OpenSSL 1.1.1+ must be compiled / installed first
+
+Download/compile/install the most recent version of OpenSSL:
+    version="1.1.1l"
+    wget https://www.openssl.org/source/openssl-$version.tar.gz
+    wget https://www.openssl.org/source/openssl-$version.tar.gz.sha256
+
+    cat openssl-$version.tar.gz.sha256
+    sha256sum openssl-$version.tar.gz
+
+    tar -xzvf openssl-$version.tar.gz
+    cd openssl-$version
+
+    ./config --prefix=/home/$USER/openssl --openssldir=/home/$USER/openssl no-ssl2
+    make
+    make test
+    make install
+
+Update .bash_profile / .bashrc:
+
+    export PATH=$HOME/openssl/bin:$PATH
+    export LD_LIBRARY_PATH=$HOME/openssl/lib
+    export LC_ALL="en_US.UTF-8"
+    export LDFLAGS="-L/home/$USER/openssl/lib -Wl,-rpath,/home/$USER/openssl/lib"
+
+Install required packages:
+
+    sudo apt-get install -y build-essential tk-dev libncurses5-dev libncursesw5-dev libreadline6-dev libdb5.3-dev libgdbm-dev libsqlite3-dev libssl-dev libbz2-dev libexpat1-dev liblzma-dev zlib1g-dev libffi-dev
+
+Download and compile/install Python:
+
+    version="3.9.7"
+    wget https://www.python.org/ftp/python/$version/Python-$version.tgz
+    tar -xzvf Python-$version.tgz
+    cd Python-$version
+    ./configure --enable-optimizations --prefix=/usr/local/opt/python-$version --with-openssl=/home/$USER/openssl
+    make -j4  # j = jobs/workers - while make indicates unspecified=infinite, it only used 1 core without this.  should match core count
+    sudo make altinstall
+
+    for f in `ls --color=never /usr/local/opt/python-$version/bin`; do sudo ln -sv -T /usr/local/opt/python-$version/bin/$f /usr/local/bin/$f; done
+
+    cd ..
+    sudo rm -rf Python-$version
+    rm Python-$version.tgz
+
+------------------------------------------------------------------------------------------------------------------------
+
+Note: The extra SSL step may not be necessary - I realized afterwards that I had mistakenly left stale references to my
+first attempt that was missing the required packages, and that that was what I was getting when running `python3.9`
+without specifying the full path.
