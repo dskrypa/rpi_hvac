@@ -10,7 +10,7 @@ import _venv  # This will activate the venv, if it exists and is not already act
 import logging
 
 sys.path.append(PROJECT_ROOT.joinpath('lib').as_posix())
-from ds_tools.__version__ import __author_email__, __version__
+from rpi_hvac.__version__ import __author_email__, __version__
 from ds_tools.argparsing import ArgParser
 from ds_tools.core.main import wrap_main
 from ds_tools.logging import init_logging

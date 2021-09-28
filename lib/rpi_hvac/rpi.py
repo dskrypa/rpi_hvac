@@ -6,6 +6,8 @@ Utilities for working with the Raspberry Pi's SenseHat
 
 import logging
 
+from adafruit_dht import DHT22
+from board import D4  # noqa
 try:
     from psutil import sensors_temperatures
 except ImportError:
@@ -16,8 +18,28 @@ except ImportError:
     class SenseHat:
         pass
 
-__all__ = ['EnvSensor']
+__all__ = ['EnvSensor', 'Dht22Sensor']
 log = logging.getLogger(__name__)
+
+
+class Dht22Sensor:
+    def __init__(self, max_retries: int = 4):
+        self.sensor = DHT22(D4, False)
+        self.max_retries = max_retries
+
+    def read(self) -> tuple[float, float]:
+        retries = self.max_retries
+        sensor = self.sensor
+        last_exc = None
+        while retries > 0:
+            try:
+                sensor.measure()
+            except RuntimeError as e:
+                retries -= 1
+                last_exc = e
+            else:
+                return sensor._humidity, sensor._temperature
+        raise SensorReadFailed(f'Failed to read sensor - {last_exc}')
 
 
 class EnvSensor:
@@ -47,3 +69,6 @@ class EnvSensor:
         log.debug(f'Temps: cpu={cpu_temp} temp={temp_a} from_humidity={temp_b} from_pressure={temp_c}')
         return (temp_a + temp_b + temp_c) / 3
 
+
+class SensorReadFailed(Exception):
+    """Exception to be raised when an attempt to read a given sensor fails"""

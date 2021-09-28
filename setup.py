@@ -10,7 +10,7 @@ with project_root.joinpath('readme.rst').open('r', encoding='utf-8') as f:
     long_description = f.read()
 
 about = {}
-with project_root.joinpath('lib', '__version__.py').open('r', encoding='utf-8') as f:
+with project_root.joinpath('lib', 'rpi_hvac', '__version__.py').open('r', encoding='utf-8') as f:
     exec(f.read(), about)
 
 
@@ -18,6 +18,7 @@ requirements = [
     'ds_tools@ git+git://github.com/dskrypa/ds_tools',
     'requests_client@ git+git://github.com/dskrypa/requests_client',
     'tz_aware_dt @ git+git://github.com/dskrypa/tz_aware_dt',
+    'adafruit-circuitpython-dht',
     'flask',
     'gevent',
     'keyring',
