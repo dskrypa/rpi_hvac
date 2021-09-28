@@ -1,0 +1,16 @@
+Update installed packages via CLI
+
+Note: If there is junk installed that you don't care about, uninstall those packages first to prevent them from slowing
+down the update.
+
+Steps:
+
+    sudo apt update
+    sudo apt full-upgrade
+    sudo apt clean
+
+
+To update Raspberry Pi firmware:
+
+    sudo apt install rpi-update
+    sudo rpi-update
