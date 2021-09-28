@@ -34,7 +34,7 @@ def parser():
 @wrap_main
 def main():
     args = parser().parse_args(req_subparser_value=True)
-    init_logging(args.verbose, log_path=None, names_add=['rpi_hvac'], entry_fmt=ENTRY_FMT_DETAILED)
+    init_logging(args.verbose, names_add=['rpi_hvac'], entry_fmt=ENTRY_FMT_DETAILED)
 
     from rpi_hvac.nest.client import NestWebClient
     nest = NestWebClient(config_path=args.config, reauth=args.reauth)

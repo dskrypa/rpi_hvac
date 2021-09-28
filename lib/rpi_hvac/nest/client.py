@@ -27,7 +27,8 @@ except ImportError:
 from ds_tools.fs.paths import get_user_cache_dir
 from ds_tools.input import get_input
 from requests_client import RequestsClient, USER_AGENT_CHROME
-from tz_aware_dt import datetime_with_tz, localize, format_duration, TZ_LOCAL, now, TZ_UTC
+from tz_aware_dt.tz_aware_dt import datetime_with_tz, localize, TZ_LOCAL, now, TZ_UTC
+from tz_aware_dt.utils import format_duration
 from ..utils import celsius_to_fahrenheit as c2f, fahrenheit_to_celsius as f2c
 from .exceptions import SessionExpired
 from .schedule import NestSchedule
@@ -115,7 +116,7 @@ class NestWebClient(RequestsClient):
 
     def _maybe_refresh_login(self):
         with self._lock:
-            if self._session_expiry is None or self._session_expiry < TZ_LOCAL.localize(datetime.now()):
+            if self._session_expiry is None or self._session_expiry < datetime.now(TZ_LOCAL):
                 for key in ('_service_urls', '_transport_host_port'):
                     try:
                         del self.__dict__[key]
