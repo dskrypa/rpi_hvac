@@ -75,7 +75,7 @@ class TempMonitor:
     def update_nest_status(self):
         nest_status = self.nest.get_state(fahrenheit=not self.celsius)
         self.last_nest_check = datetime.now(TZ_LOCAL)
-        self.nest_running = nest_status['fan_current_speed'] == 'off'
+        self.nest_running = nest_status['fan_current_speed'] != 'off'
         self.nest_mode = nest_status['current_schedule_mode'].upper()
         self.nest_current = nest_status['current_temperature']
         self.nest_target = nest_status['target_temperature']
