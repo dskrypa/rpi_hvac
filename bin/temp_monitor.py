@@ -27,7 +27,6 @@ def parser():
     parser = ArgParser(description='Temperature Monitor / Nest Controller')
     parser.add_argument('server', metavar='HOST:PORT', help='The host:port that is running temp_sensor.py')
     parser.add_argument('--delay', '-d', type=int, default=15, help='Delay between checks')
-    parser.add_argument('--celsius', '-C', action='store_true', help='Output temperatures in Celsius (default: Fahrenheit)')
     parser.add_argument('--config', '-c', metavar='PATH', default='~/.config/nest.cfg', help='Config file location')
     parser.add_argument('--reauth', '-A', action='store_true', help='Force re-authentication, even if a cached session exists')
     parser.add_argument('--force_check_freq', '-f', type=int, help='Frequency in minutes to force a Nest status check, even if temp is not increasing')
@@ -40,9 +39,7 @@ def main():
     args = parser().parse_args(req_subparser_value=True)
     init_logging(args.verbose, names_add=['rpi_hvac'], entry_fmt=ENTRY_FMT_DETAILED)
 
-    monitor = TempMonitor(
-        args.server, args.delay, args.config, args.reauth, celsius=args.celsius, force_check_freq=args.force_check_freq
-    )
+    monitor = TempMonitor(args.server, args.delay, args.config, args.reauth, force_check_freq=args.force_check_freq)
     monitor.run()
 
 
@@ -55,7 +52,6 @@ class TempMonitor:
         nest_reauth,
         nest_check_freq: int = 180,
         force_check_freq: int = None,
-        celsius: bool = False,
     ):
         self.url = f'http://{server}/read'
         self.session = Session()
@@ -68,7 +64,6 @@ class TempMonitor:
         init_td = max(self.nest_check_freq, self.force_check_freq) if force_check_freq else self.nest_check_freq
         self.last_nest_check = datetime.now(TZ_LOCAL) - init_td - timedelta(seconds=1)
         self.delay = delay
-        self.celsius = celsius
         self.nest_mode = None
         self.nest_running = False
         self.nest_current = None
@@ -87,7 +82,7 @@ class TempMonitor:
             raise ReadRequestError(f'Error reading temperature from server: {resp} - {resp.text}')
 
     def update_nest_status(self):
-        nest_status = self.nest.get_state(fahrenheit=not self.celsius)
+        nest_status = self.nest.get_state()
         self.last_nest_check = datetime.now(TZ_LOCAL)
         self.nest_running = nest_status['fan_current_speed'] != 'off'
         self.nest_mode = nest_status['current_schedule_mode'].upper()

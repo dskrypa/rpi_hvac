@@ -35,6 +35,7 @@ class NestSchedule:
         :param list raw_schedules: The result of NestWebClient._app_launch(['schedule'])['updated_buckets']
         """
         self._nest = nest
+        self.config = nest.config
         self.object_key = f'schedule.{self._nest.serial}'
         self.user_id = f'user.{self._nest.user_id}'
         for entry in raw_schedules:
@@ -94,20 +95,20 @@ class NestSchedule:
         }
         return cls(nest, [raw_schedule])
 
-    def to_dict(self, unit='f'):
+    def to_dict(self):
         schedule = {
             'meta': {
                 'ver': self._ver,
                 'mode': self._schedule_mode,
                 'name': self._name,
-                'unit': unit,
+                'unit': self.config.temp_unit,
                 'user_nums': self.user_nums,
             },
-            'days': self.as_day_time_temp_map(unit),
+            'days': self.as_day_time_temp_map(),
         }
         return schedule
 
-    def save(self, path: Union[str, Path], unit='f', overwrite: bool = False, dry_run: bool = False):
+    def save(self, path: Union[str, Path], overwrite: bool = False, dry_run: bool = False):
         path = Path(path)
         if path.is_file() and not overwrite:
             raise ValueError(f'Path already exists: {path}')
@@ -117,9 +118,9 @@ class NestSchedule:
         prefix = '[DRY RUN] Would save' if dry_run else 'Saving'
         log.info(f'{prefix} schedule to {path}')
         with path.open('w', encoding='utf-8', newline='\n') as f:
-            json.dump(self.to_dict(unit), f, indent=4, sort_keys=False)
+            json.dump(self.to_dict(), f, indent=4, sort_keys=False)
 
-    def update(self, cron_str: str, action: str, temp: float, unit: str = 'c', dry_run: bool = False):
+    def update(self, cron_str: str, action: str, temp: float, dry_run: bool = False):
         cron = NestCronSchedule.from_cron(cron_str)
         changes_made = 0
         if action == 'remove':
@@ -134,7 +135,7 @@ class NestSchedule:
                     changes_made += 1
         elif action == 'add':
             for dow, tod_seconds in cron:
-                self.insert(dow, tod_seconds, temp, unit)
+                self.insert(dow, tod_seconds, temp)
                 changes_made += 1
         else:
             raise ValueError(f'Unexpected {action=!r}')
@@ -146,12 +147,10 @@ class NestSchedule:
         else:
             log.info(f'No changes made')
 
-    def insert(self, day: int, time_of_day: Union[str, int], temp: float, unit: str = 'c'):
-        if unit not in ('f', 'c'):
-            raise ValueError(f'Unexpected temperature {unit=!r}')
-        elif not 0 <= day < 7:
+    def insert(self, day: int, time_of_day: Union[str, int], temp: float):
+        if not 0 <= day < 7:
             raise ValueError(f'Invalid {day=!r} - Expected 0=Sunday ~ 6=Saturday')
-        temp = f2c(temp) if unit == 'f' else temp
+        temp = f2c(temp) if self.config.temp_unit == 'f' else temp
         time_of_day = wall_to_secs(time_of_day) if isinstance(time_of_day, str) else time_of_day
         if not 0 <= time_of_day < 86400:
             raise ValueError(f'Invalid {time_of_day=!r} ({secs_to_wall(time_of_day)}) - must be > 0 and < 86400')
@@ -218,10 +217,10 @@ class NestSchedule:
             resp = self._nest._post_put(value, self.object_key, 'OVERWRITE')
             log.debug('Push response: {}'.format(json.dumps(resp.json(), indent=4, sort_keys=True)))
 
-    def as_day_time_temp_map(self, unit='f'):
+    def as_day_time_temp_map(self):
         day_names = calendar.day_name[-1:] + calendar.day_name[:-1]
         day_time_temp_map = {day: None for day in day_names}
-        convert = unit == 'f'
+        convert = self.config.temp_unit == 'f'
         for day, (day_num, day_schedule) in zip(calendar.day_name, sorted(self._schedule.items())):
             day_time_temp_map[day] = {
                 secs_to_wall(entry['time']): round(c2f(entry['temp']), 2) if convert else entry['temp']
@@ -229,8 +228,8 @@ class NestSchedule:
             }
         return day_time_temp_map
 
-    def format(self, output_format='table', unit='f'):
-        schedule = self.as_day_time_temp_map(unit)
+    def format(self, output_format: str = 'table'):
+        schedule = self.as_day_time_temp_map()
         if output_format == 'table':
             times = set()
             rows = []
@@ -247,10 +246,10 @@ class NestSchedule:
         else:
             return Printer(output_format).pformat(schedule, sort_keys=False)
 
-    def print(self, output_format='table', unit='f'):
+    def print(self, output_format: str = 'table'):
         if output_format == 'table':
             print(f'Schedule name={self._name!r} mode={self._schedule_mode!r} ver={self._ver!r}\n')
-        print(self.format(output_format, unit))
+        print(self.format(output_format))
 
     @cached_property
     def user_nums(self):

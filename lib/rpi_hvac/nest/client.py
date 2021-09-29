@@ -141,7 +141,7 @@ class NestWebClient:
         resp = self.app_launch(['device', 'shared'])
         return {serial: _filter_capabilities(info) for serial, info in resp.items()}
 
-    def get_state(self, fahrenheit: bool = True):
+    def get_state(self, celsius: bool = None):
         info = self.app_launch(['device', 'shared'])[self.serial]
         capabilities = _filter_capabilities(info)
         # fmt: off
@@ -176,6 +176,7 @@ class NestWebClient:
                 non_temps['shared'].append(key)
 
         # fmt: on
+        fahrenheit = self.config.temp_unit == 'f' if celsius is None else not celsius
         state = {}
         for section, keys in temps.items():
             for key in keys:
@@ -199,38 +200,30 @@ class NestWebClient:
     def get_mode(self):
         return self.app_launch(['shared'])[self.serial]['shared']['target_temperature_type']
 
-    def set_temp_range(self, low: float, high: float, unit: str = 'f'):
+    def set_temp_range(self, low: float, high: float):
         """
         :param low: Minimum temperature to maintain in Celsius (heat will turn on if the temp drops below this)
         :param high: Maximum temperature to allow in Celsius (air conditioning will turn on above this)
-        :param unit: Either 'f' or 'c' for fahrenheit/celsius
         :return: The parsed response
         """
-        unit = unit.lower()
-        if unit[0] == 'f':
+        if self.config.temp_unit == 'f':
             low = f2c(low)
             high = f2c(high)
-        elif unit[0] != 'c':
-            raise ValueError('Unit must be either \'f\' or \'c\' for fahrenheit/celsius')
         resp = self._post_put({'target_temperature_low': low, 'target_temperature_high': high})
         return resp.json()
 
-    def set_temp(self, temp: float, unit: str = 'f', force_run: bool = False):
+    def set_temp(self, temp: float, force_run: bool = False):
         """
-        :param float temp: The target temperature to maintain in Celsius
-        :param str unit: Either 'f' or 'c' for fahrenheit/celsius
-        :param bool force_run: If the delta between the new temp and the old temp is < 0.5 degrees, then first set a
+        :param temp: The target temperature to maintain in Celsius
+        :param force_run: If the delta between the new temp and the old temp is < 0.5 degrees, then first set a
           temp that would trigger the Nest to run, then switch to the desired target temp
         :return: The parsed response
         """
-        unit = unit.lower()
-        fahrenheit = unit[0] == 'f'
+        fahrenheit = self.config.temp_unit == 'f'
         if fahrenheit:
             temp = f2c(temp)
-        elif unit[0] != 'c':
-            raise ValueError('Unit must be either \'f\' or \'c\' for fahrenheit/celsius')
         if force_run:
-            status = self.get_state(fahrenheit=False)
+            status = self.get_state(celsius=True)
             mode = status['current_schedule_mode'].upper()
             current = status['current_temperature']
             if mode == 'COOL':
