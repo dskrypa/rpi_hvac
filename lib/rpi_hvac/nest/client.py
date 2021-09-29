@@ -88,7 +88,7 @@ class NestWebClient:
             self.config.set('device', 'serial', serial)
         return serial
 
-    def app_launch(self, bucket_types: list[str] = None):
+    def app_launch(self, bucket_types: list[str] = None, raw: bool = False) -> dict[str, Any]:
         """
         Interesting info by section::\n
             {
@@ -116,10 +116,13 @@ class NestWebClient:
                             }, ...
             }}}}
 
-        :param list bucket_types: The bucket_types to retrieve (such as device, shared, schedule, etc.)
-        :return dict: Mapping of {serial:{bucket_type:{bucket['value']}}}
+        :param bucket_types: The bucket_types to retrieve (such as device, shared, schedule, etc.)
+        :param raw: True to return the raw response (default: process the response)
+        :return: Mapping of {serial:{bucket_type:{bucket['value']}}}
         """
         resp = self.session.app_launch(bucket_types or ['device', 'shared', 'schedule']).json()
+        if raw:
+            return resp
         info = defaultdict(dict)
         for bucket in resp['updated_buckets']:
             bucket_type, serial = bucket['object_key'].split('.')
@@ -128,7 +131,7 @@ class NestWebClient:
 
     @cached_property
     def bucket_types(self) -> dict[str, set[str]]:
-        resp = self.session.app_launch(['buckets']).json()
+        resp = self.app_launch(['buckets'], raw=True)
         buckets = resp['updated_buckets'][0]['value']['buckets']
         types = defaultdict(set)
         for bucket in buckets:
@@ -337,7 +340,7 @@ class NestWebClient:
             return client.get(f'api/0.1/weather/forecast/{zip_code},{country_code}').json()
 
     def get_schedule(self) -> NestSchedule:
-        raw = self.session.app_launch(['schedule']).json()['updated_buckets']
+        raw = self.app_launch(['schedule'], raw=True)['updated_buckets']
         return NestSchedule(self, raw)
 
 

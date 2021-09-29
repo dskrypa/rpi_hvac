@@ -10,7 +10,7 @@ import logging
 import time
 from functools import cached_property
 from pathlib import Path
-from typing import TYPE_CHECKING, List, Dict, Any, Union
+from typing import TYPE_CHECKING, Any, Union
 
 from ds_tools.output import Printer, SimpleColumn, Table
 from ..utils import celsius_to_fahrenheit as c2f, fahrenheit_to_celsius as f2c, secs_to_wall, wall_to_secs
@@ -25,14 +25,14 @@ log = logging.getLogger(__name__)
 
 
 class NestSchedule:
-    def __init__(self, nest: 'NestWebClient', raw_schedules: List[Dict[str, Any]]):
+    def __init__(self, nest: 'NestWebClient', raw_schedules: list[dict[str, Any]]):
         """
         .. important::
             Nest represents days as 0=Monday ~ 6=Sunday.  This class uses the same values as cron, i.e., 0=Sunday ~
             6=Saturday, and automatically converts between them where necessary.
 
-        :param NestWebClient nest: The :class:`NestWebClient` from which this schedule originated
-        :param list raw_schedules: The result of NestWebClient._app_launch(['schedule'])['updated_buckets']
+        :param nest: The :class:`NestWebClient` from which this schedule originated
+        :param raw_schedules: The result of ``NestWebClient.app_launch(['schedule'], raw=True)['updated_buckets']``
         """
         self._nest = nest
         self.config = nest.config
@@ -52,6 +52,8 @@ class NestSchedule:
             int(day): [entry for i, entry in sorted(sched.items())] for day, sched in sorted(info['days'].items())
         }
 
+    # region Serialization / De-serialization
+
     @classmethod
     def from_file(cls, nest: 'NestWebClient', path: Union[str, Path]) -> 'NestSchedule':
         path = Path(path)
@@ -64,7 +66,7 @@ class NestSchedule:
         return cls.from_dict(nest, schedule)
 
     @classmethod
-    def from_dict(cls, nest: 'NestWebClient', schedule: Dict[str, Any]) -> 'NestSchedule':
+    def from_dict(cls, nest: 'NestWebClient', schedule: dict[str, Any]) -> 'NestSchedule':
         user_id = f'user.{nest.user_id}'
         meta = schedule['meta']
         user_num = meta['user_nums'][user_id]
@@ -119,6 +121,10 @@ class NestSchedule:
         log.info(f'{prefix} schedule to {path}')
         with path.open('w', encoding='utf-8', newline='\n') as f:
             json.dump(self.to_dict(), f, indent=4, sort_keys=False)
+
+    # endregion
+
+    # region Schedule Modifiers
 
     def update(self, cron_str: str, action: str, temp: float, dry_run: bool = False):
         cron = NestCronSchedule.from_cron(cron_str)
@@ -206,16 +212,16 @@ class NestSchedule:
             str(day): {str(i): entry for i, entry in enumerate(entries)}
             for day, entries in sorted(self._schedule.items())
         }
-        log.info('New schedule to be pushed:\n{}'.format(self.format()))
+        log.info(f'New schedule to be pushed:\n{self.format()}')
         log.debug('Full schedule to be pushed: {}'.format(json.dumps(days, indent=4, sort_keys=True)))
         prefix = '[DRY RUN] Would push' if dry_run else 'Pushing'
         log.info(f'{prefix} changes to {self._schedule_mode} schedule with name={self._name!r}')
         if not dry_run:
-            value = {
-                'ver': self._ver, 'schedule_mode': self._schedule_mode, 'name': self._name, 'days': days
-            }
+            value = {'ver': self._ver, 'schedule_mode': self._schedule_mode, 'name': self._name, 'days': days}
             resp = self._nest._post_put(value, self.object_key, 'OVERWRITE')
             log.debug('Push response: {}'.format(json.dumps(resp.json(), indent=4, sort_keys=True)))
+
+    # endregion
 
     def as_day_time_temp_map(self):
         day_names = calendar.day_name[-1:] + calendar.day_name[:-1]
@@ -295,11 +301,11 @@ class NestSchedule:
                 break
 
 
-def _previous_day(day: int):
+def _previous_day(day: int) -> int:
     return 6 if day == 0 else day - 1
 
 
-def _next_day(day: int):
+def _next_day(day: int) -> int:
     return 0 if day == 6 else day + 1
 
 
