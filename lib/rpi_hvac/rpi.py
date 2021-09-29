@@ -13,25 +13,31 @@ from board import D4  # noqa
 try:
     from psutil import sensors_temperatures
 except ImportError:
-    sensors_temperatures = lambda: {}
+    sensors_temperatures = lambda: {}  # noqa
 try:
     from sense_hat import SenseHat
 except ImportError:
-    class SenseHat:
-        pass
+    SenseHat = None
 
-__all__ = ['EnvSensor', 'Dht22Sensor']
+__all__ = ['EnvSensor', 'Dht22Sensor', 'SensorReadFailed']
 log = logging.getLogger(__name__)
 READ_DELAY = 2
 
 
 class Dht22Sensor:
-    def __init__(self, max_retries: int = 4):
-        self.sensor = DHT22(D4, False)
+    """Represents an Adafruit DHT22 sensor"""
+
+    def __init__(self, max_retries: int = 4, pin=D4):
+        self.sensor = DHT22(pin, False)
         self.max_retries = max_retries
         self._last = 0
 
     def measure(self) -> tuple[float, float]:
+        """
+        Mostly copied from :meth:`adafruit_dht.DHTBase.measure`.  Adds a delay instead of returning immediately if it is
+        called before the read delay has elapsed.  Prevents returning stale data, and returns both humidity and
+        temperature in the same call instead of storing them and returning nothing.
+        """
         to_wait = READ_DELAY - (time.monotonic() - self._last)
         if to_wait > 0:
             log.debug(f'Waiting {to_wait:.3f} s before reading sensor')
@@ -76,6 +82,7 @@ class Dht22Sensor:
                 log.debug(f'Retrying due read failure: {e}')
 
     def read_old(self) -> tuple[float, float]:
+        """Old read method.  May return stale data."""
         if (retries := self.max_retries) < 0:
             retries = 1
         sensor = self.sensor
@@ -95,8 +102,12 @@ class Dht22Sensor:
 
 
 class EnvSensor:
+    """Represents the temperature/humidity sensors in a Sense Hat"""
+
     def __init__(self):
-        self._sh = SenseHat()
+        if SenseHat is None:
+            raise RuntimeError('Missing sense_hat dependency')
+        self._sh = SenseHat()  # noqa
         self.get_humidity = self._sh.get_humidity   # Relative humidity (%)
         self.get_pressure = self._sh.get_pressure   # Pressure in Millibars
 
