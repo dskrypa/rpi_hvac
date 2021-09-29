@@ -69,10 +69,11 @@ class Dht22Sensor:
         while True:
             try:
                 return self.measure()
-            except SensorReadFailed:
+            except SensorReadFailed as e:
                 retries -= 1
                 if retries <= 0:
                     raise
+                log.debug(f'Retrying due read failure: {e}')
 
     def read_old(self) -> tuple[float, float]:
         if (retries := self.max_retries) < 0:
