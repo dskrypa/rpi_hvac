@@ -14,7 +14,7 @@ from datetime import datetime
 from functools import cached_property
 from getpass import getpass
 from threading import RLock
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, ContextManager, Union
 from urllib.parse import urlparse
 
 try:
@@ -32,6 +32,9 @@ from .config import NestConfig
 from .exceptions import SessionExpired
 from .schedule import NestSchedule
 
+if TYPE_CHECKING:
+    from requests import Response
+
 __all__ = ['NestWebClient']
 log = logging.getLogger(__name__)
 
@@ -42,7 +45,7 @@ NEST_URL = 'https://home.nest.com'
 OAUTH_URL = 'https://accounts.google.com/o/oauth2/iframerpc'
 
 
-class NestWebClient(RequestsClient):
+class NestWebClient:
     def __init__(
         self,
         email: str = None,
@@ -60,178 +63,15 @@ class NestWebClient(RequestsClient):
         :param config_path: The config path to use
         :param reauth: Force reauth, even if a cached session exists
         """
-        super().__init__(NEST_URL, user_agent_fmt=USER_AGENT_CHROME, headers={'Referer': NEST_URL})
-        self._reauth = reauth
-        self._lock = RLock()
-        self._cache_dir = get_user_cache_dir('nest')
         self.config = NestConfig(config_path, {'email': email, 'serial': serial})
-        self._no_store_pw = no_store_prompt
-        self._update_pw = update_password
-        self._session_info = None
-        self._session_expiry = None
-        self._user_id = None
-        self._nest_host_port = ('home.nest.com', None)
+        self.session = NestWebSession(self.config, reauth, no_store_prompt, update_password)
 
     @property
-    def user_id(self):
-        if self._user_id is None:
-            self._maybe_refresh_login()
-        return self._user_id
-
-    @user_id.setter
-    def user_id(self, value):
-        self._user_id = value
-
-    def _maybe_refresh_login(self):
-        with self._lock:
-            if self._session_expiry is None or self._session_expiry < datetime.now(TZ_LOCAL):
-                for key in ('_service_urls', '_transport_host_port'):
-                    try:
-                        del self.__dict__[key]
-                    except KeyError:
-                        pass
-
-                if 'oauth' in self.config:
-                    try:
-                        self._load_cached_session()
-                    except SessionExpired as e:
-                        log.debug(e)
-                        self._login_via_google()
-                else:
-                    self._login_via_nest()
+    def user_id(self) -> str:
+        return self.session.user_id
 
     @cached_property
-    def _cached_session_path(self):
-        return self._cache_dir.joinpath('session.pickle')
-
-    def _get_oauth_token(self):
-        headers = {
-            'Sec-Fetch-Mode': 'cors',
-            'X-Requested-With': 'XmlHttpRequest',
-            'Referer': 'https://accounts.google.com/o/oauth2/iframe',
-            'cookie': self.config.oauth_cookie,
-        }
-        # token_url = self.config.get('oauth', 'token_url', 'OAuth Token URL', required=True)
-        # resp = self.session.get(token_url, headers=headers)
-        params = {
-            'action': ['issueToken'],
-            'response_type': ['token id_token'],
-            'login_hint': [self.config.oauth_login_hint],
-            'client_id': [self.config.oauth_client_id],
-            'origin': [NEST_URL],
-            'scope': ['openid profile email https://www.googleapis.com/auth/nest-account'],
-            'ss_domain': [NEST_URL],
-        }
-        resp = self.session.get(OAUTH_URL, params=params, headers=headers).json()
-        log.log(9, 'Received OAuth response: {}'.format(json.dumps(resp, indent=4, sort_keys=True)))
-        return resp['access_token']
-
-    def _load_cached_session(self):
-        if self._reauth:
-            raise SessionExpired('Forced reauth')
-        elif self._cached_session_path.exists():
-            with self._cached_session_path.open('rb') as f:
-                try:
-                    expiry, userid, jwt_token, cookies = pickle.load(f)
-                except (TypeError, ValueError) as e:
-                    raise SessionExpired(f'Found a cached session, but encountered an error loading it: {e}')
-
-            if expiry < datetime.now(TZ_LOCAL) or any(cookie.expires < time.time() for cookie in cookies):
-                raise SessionExpired('Found a cached session, but it expired')
-
-            self._register_session(expiry, userid, jwt_token, cookies)
-            log.debug(f'Loaded session for user={userid} with expiry={localize(expiry)}')
-        else:
-            raise SessionExpired('No cached session was found')
-
-    def _register_session(self, expiry: datetime, userid: str, jwt_token: str, cookies=None, save: bool = False):
-        self._session_expiry = expiry
-        self.user_id = userid
-        self.session.headers['Authorization'] = f'Basic {jwt_token}'
-        if cookies is not None:
-            for cookie in cookies:
-                self.session.cookies.set_cookie(cookie)
-
-        if save:
-            if not self._cached_session_path.exists():
-                self._cached_session_path.parent.mkdir(parents=True)
-            log.debug(f'Saving session info in cache: {self._cached_session_path}')
-            with self._cached_session_path.open('wb') as f:
-                pickle.dump((expiry, userid, jwt_token, list(self.session.cookies)), f)
-
-    def _login_via_google(self):
-        token = self._get_oauth_token()
-        headers = {'Authorization': f'Bearer {token}', 'x-goog-api-key': NEST_API_KEY}
-        params = {
-            'embed_google_oauth_access_token': True, 'expire_after': '3600s',
-            'google_oauth_access_token': token, 'policy_id': 'authproxy-oauth-policy',
-        }
-        resp = self.session.post(JWT_URL, params=params, headers=headers).json()
-        log.log(9, 'Initialized session; response: {}'.format(json.dumps(resp, indent=4, sort_keys=True)))
-        claims = resp['claims']
-        expiry = datetime_with_tz(claims['expirationTime'], '%Y-%m-%dT%H:%M:%S.%fZ', TZ_UTC).astimezone(TZ_LOCAL)
-        self._register_session(expiry, claims['subject']['nestId']['id'], resp['jwt'], save=True)
-        log.debug(f'Initialized session for user={self.user_id!r} with expiry={localize(expiry)}')
-
-    def _login_via_nest(self):
-        """This login method is deprecated"""
-        log.debug(f'Initializing session for email={self.config.email!r}')
-        resp = self.post('session', json={'email': self.config.email, 'password': self.__password})
-        info = resp.json()
-        self.user_id = info['userid']
-        self.session.headers['Authorization'] = 'Basic {}'.format(info['access_token'])
-        self.session.headers['X-nl-user-id'] = self.user_id
-        self._session_expiry = expiry = datetime_with_tz(info['expires_in'], '%a, %d-%b-%Y %H:%M:%S %Z')
-        log.debug(f'Initialized legacy session for user={self.user_id!r} with expiry={localize(expiry)}')
-        transport_url = urlparse(info['urls']['transport_url'])
-        self.__dict__['_transport_host_port'] = (transport_url.hostname, transport_url.port)
-
-    @cached_property
-    def __password(self):
-        if keyring is not None:
-            password = keyring.get_password(type(self).__name__, self.config.email)
-            if self._update_pw and password:
-                keyring.delete_password(type(self).__name__, self.config.email)
-                password = None
-            if password is None:
-                password = getpass()
-                if not self._no_store_pw and get_input(f'Store password in keyring ({KEYRING_URL})?'):
-                    keyring.set_password(type(self).__name__, self.config.email, password)
-                    log.info('Stored password in keyring')
-            else:
-                log.debug('Using password from keyring')
-        else:
-            password = getpass()
-        return password
-
-    @cached_property
-    def _service_urls(self):
-        resp = self._app_launch([])
-        return resp['service_urls']
-
-    @cached_property
-    def _transport_host_port(self):
-        transport_url = urlparse(self._service_urls['urls']['transport_url'])
-        return transport_url.hostname, transport_url.port
-
-    @contextmanager
-    def transport_url(self):
-        with self._lock:
-            self._maybe_refresh_login()
-            log.debug('Using host:port={}:{}'.format(*self._transport_host_port))
-            self.host, self.port = self._transport_host_port
-            yield self
-
-    @contextmanager
-    def nest_url(self):
-        with self._lock:
-            self._maybe_refresh_login()
-            log.debug('Using host:port={}:{}'.format(*self._nest_host_port))
-            self.host, self.port = self._nest_host_port
-            yield self
-
-    @cached_property
-    def serial(self):
+    def serial(self) -> str:
         serial = self.config.serial
         if not serial:
             resp = self.app_launch(['device'])
@@ -248,13 +88,7 @@ class NestWebClient(RequestsClient):
             self.config.set('device', 'serial', serial)
         return serial
 
-    def _app_launch(self, bucket_types: list[str], raw: bool = False):
-        with self.nest_url():
-            payload = {'known_bucket_types': bucket_types, 'known_bucket_versions': []}
-            resp = self.post(f'api/0.1/user/{self.user_id}/app_launch', json=payload)
-            return resp if raw else resp.json()
-
-    def app_launch(self, bucket_types=None):
+    def app_launch(self, bucket_types: list[str] = None):
         """
         Interesting info by section::\n
             {
@@ -285,7 +119,7 @@ class NestWebClient(RequestsClient):
         :param list bucket_types: The bucket_types to retrieve (such as device, shared, schedule, etc.)
         :return dict: Mapping of {serial:{bucket_type:{bucket['value']}}}
         """
-        resp = self._app_launch(bucket_types or ['device', 'shared', 'schedule'])
+        resp = self.session.app_launch(bucket_types or ['device', 'shared', 'schedule']).json()
         info = defaultdict(dict)
         for bucket in resp['updated_buckets']:
             bucket_type, serial = bucket['object_key'].split('.')
@@ -293,8 +127,8 @@ class NestWebClient(RequestsClient):
         return info
 
     @cached_property
-    def bucket_types(self):
-        resp = self._app_launch(['buckets'])
+    def bucket_types(self) -> dict[str, set[str]]:
+        resp = self.session.app_launch(['buckets']).json()
         buckets = resp['updated_buckets'][0]['value']['buckets']
         types = defaultdict(set)
         for bucket in buckets:
@@ -305,19 +139,11 @@ class NestWebClient(RequestsClient):
     @cached_property
     def device_capabilities(self):
         resp = self.app_launch(['device', 'shared'])
-        return {serial: self._filter_capabilities(info) for serial, info in resp.items()}
+        return {serial: _filter_capabilities(info) for serial, info in resp.items()}
 
-    def _filter_capabilities(self, info):
-        capabilities = {
-            key.split('_', 1)[1]: val for key, val in info['device'].items() if key.startswith('has_')
-        }
-        capabilities['fan_capabilities'] = info['device']['fan_capabilities']
-        return capabilities
-
-    def get_state(self, fahrenheit=True):
-        resp = self.app_launch(['device', 'shared'])
-        info = resp[self.serial]
-        capabilities = self._filter_capabilities(info)
+    def get_state(self, fahrenheit: bool = True):
+        info = self.app_launch(['device', 'shared'])[self.serial]
+        capabilities = _filter_capabilities(info)
         # fmt: off
         temps = {
             'shared': (
@@ -361,24 +187,23 @@ class NestWebClient(RequestsClient):
         return state
 
     def get_mobile_info(self):
-        with self.transport_url():
-            return self.get('v2/mobile/user.{}'.format(self.user_id)).json()
+        with self.session.transport_url() as client:
+            return client.get(f'v2/mobile/user.{self.session.user_id}').json()
 
-    def _post_put(self, value: Any, obj_key: Optional[str] = None, op: Optional[str] = None):
+    def _post_put(self, value: Any, obj_key: str = None, op: str = None) -> 'Response':
         obj_key = obj_key or f'shared.{self.serial}'
-        with self.transport_url():
-            payload = {'objects': [{'object_key': obj_key, 'op': op or 'MERGE', 'value': value}]}
-            return self.post('v5/put', json=payload)
+        payload = {'objects': [{'object_key': obj_key, 'op': op or 'MERGE', 'value': value}]}
+        with self.session.transport_url() as client:
+            return client.post('v5/put', json=payload)
 
     def get_mode(self):
-        resp = self.app_launch(['shared'])
-        return resp[self.serial]['shared']['target_temperature_type']
+        return self.app_launch(['shared'])[self.serial]['shared']['target_temperature_type']
 
-    def set_temp_range(self, low, high, unit='f'):
+    def set_temp_range(self, low: float, high: float, unit: str = 'f'):
         """
-        :param float low: Minimum temperature to maintain in Celsius (heat will turn on if the temp drops below this)
-        :param float high: Maximum temperature to allow in Celsius (air conditioning will turn on above this)
-        :param str unit: Either 'f' or 'c' for fahrenheit/celsius
+        :param low: Minimum temperature to maintain in Celsius (heat will turn on if the temp drops below this)
+        :param high: Maximum temperature to allow in Celsius (air conditioning will turn on above this)
+        :param unit: Either 'f' or 'c' for fahrenheit/celsius
         :return: The parsed response
         """
         unit = unit.lower()
@@ -430,25 +255,24 @@ class NestWebClient(RequestsClient):
         resp = self._post_put({'target_temperature': temp})
         return resp.json()
 
-    def set_mode(self, mode):
+    def set_mode(self, mode: str):
         """
-        :param str mode: One of 'cool', 'heat', 'range', or 'off'
+        :param mode: One of 'cool', 'heat', 'range', or 'off'
         :return: The parsed response
         """
         mode = mode.lower()
-        if mode not in ('cool', 'heat', 'range', 'off'):
+        if mode not in {'cool', 'heat', 'range', 'off'}:
             raise ValueError(f'Invalid mode: {mode!r}')
         resp = self._post_put({'target_temperature_type': mode})
         return resp.json()
 
-    def start_fan(self, duration=1800):
+    def start_fan(self, duration: int = 1800):
         """
-        :param int duration: Number of seconds for which the fan should run
+        :param duration: Number of seconds for which the fan should run
         :return: The parsed response
         """
         timeout = int(time.time()) + duration
-        fmt = 'Submitting fan start request with duration={} => end time of {}'
-        log.debug(fmt.format(format_duration(duration), timeout))
+        log.debug(f'Submitting fan start request with duration={format_duration(duration)} => end time of {timeout}')
         resp = self._post_put({'fan_timer_timeout': timeout})
         return resp.json()
 
@@ -483,12 +307,11 @@ class NestWebClient(RequestsClient):
 
         :return: The parsed response
         """
-        with self.transport_url():
-            payload = {'objects': [{'object_key': f'energy_latest.{self.serial}'}]}
-            resp = self.post('v5/subscribe', json=payload)
-            return resp.json()
+        payload = {'objects': [{'object_key': f'energy_latest.{self.serial}'}]}
+        with self.session.transport_url() as client:
+            return client.post('v5/subscribe', json=payload).json()
 
-    def get_weather(self, zip_code=None, country_code='US'):
+    def get_weather(self, zip_code: Union[str, int] = None, country_code: str = 'US'):
         """
         Get the weather forecast.  Response format::
             {
@@ -512,15 +335,195 @@ class NestWebClient(RequestsClient):
         :return dict: The parsed response
         """
         if zip_code is None:
-            resp = self._app_launch([])
+            resp = self.session.app_launch().json()
             location = next(iter(resp['weather_for_structures'].values()))['location']
             zip_code = location['zip']
             country_code = country_code or location['country']
 
-        with self.nest_url():
-            resp = self.get('api/0.1/weather/forecast/{},{}'.format(zip_code, country_code))
-            return resp.json()
+        with self.session.nest_url() as client:
+            return client.get(f'api/0.1/weather/forecast/{zip_code},{country_code}').json()
 
     def get_schedule(self) -> NestSchedule:
-        raw = self._app_launch(['schedule'])['updated_buckets']
+        raw = self.session.app_launch(['schedule']).json()['updated_buckets']
         return NestSchedule(self, raw)
+
+
+class NestWebSession:
+    _nest_host_port = ('home.nest.com', None)
+
+    def __init__(
+        self, config: NestConfig, reauth: bool = False, no_store_prompt: bool = False, update_password: bool = False
+    ):
+        self.config = config
+        self.cache_path = get_user_cache_dir('nest').joinpath('session.pickle')
+        self.client = RequestsClient(NEST_URL, user_agent_fmt=USER_AGENT_CHROME, headers={'Referer': NEST_URL})
+        self._lock = RLock()
+        self.expiry = None
+        self._user_id = None
+        self._reauth = reauth
+        self._no_store_pw = no_store_prompt
+        self._update_pw = update_password
+
+    @property
+    def user_id(self):
+        if self._user_id is None:
+            self._maybe_refresh_login()
+        return self._user_id
+
+    @user_id.setter
+    def user_id(self, value):
+        self._user_id = value
+
+    @contextmanager
+    def transport_url(self) -> ContextManager[RequestsClient]:
+        with self._lock:
+            self._maybe_refresh_login()
+            log.debug('Using host:port={}:{}'.format(*self._transport_host_port))
+            self.client.host, self.client.port = self._transport_host_port
+            yield self.client
+
+    @contextmanager
+    def nest_url(self) -> ContextManager[RequestsClient]:
+        with self._lock:
+            self._maybe_refresh_login()
+            log.debug('Using host:port={}:{}'.format(*self._nest_host_port))
+            self.client.host, self.client.port = self._nest_host_port
+            yield self.client
+
+    @cached_property
+    def service_urls(self):
+        return self.app_launch().json()['service_urls']
+
+    @cached_property
+    def _transport_host_port(self):
+        transport_url = urlparse(self.service_urls['urls']['transport_url'])
+        return transport_url.hostname, transport_url.port
+
+    def _maybe_refresh_login(self):
+        with self._lock:
+            if self.expiry is None or self.expiry < datetime.now(TZ_LOCAL):
+                for key in ('service_urls', '_transport_host_port'):
+                    try:
+                        del self.__dict__[key]
+                    except KeyError:
+                        pass
+
+                if 'oauth' in self.config:
+                    try:
+                        self._load_cached()
+                    except SessionExpired as e:
+                        log.debug(e)
+                        self._login_via_google()
+                else:
+                    self._login_via_nest()
+
+    def _load_cached(self):
+        if self._reauth:
+            raise SessionExpired('Forced reauth')
+        elif self.cache_path.exists():
+            with self.cache_path.open('rb') as f:
+                try:
+                    expiry, userid, jwt_token, cookies = pickle.load(f)
+                except (TypeError, ValueError) as e:
+                    raise SessionExpired(f'Found a cached session, but encountered an error loading it: {e}')
+
+            if expiry < datetime.now(TZ_LOCAL) or any(cookie.expires < time.time() for cookie in cookies):
+                raise SessionExpired('Found a cached session, but it expired')
+
+            self._register_session(expiry, userid, jwt_token, cookies)
+            log.debug(f'Loaded session for user={userid} with expiry={localize(expiry)}')
+        else:
+            raise SessionExpired('No cached session was found')
+
+    def _register_session(self, expiry: datetime, userid: str, jwt_token: str, cookies=None, save: bool = False):
+        self.expiry = expiry
+        self.user_id = userid
+        self.client.session.headers['Authorization'] = f'Basic {jwt_token}'
+        if cookies is not None:
+            for cookie in cookies:
+                self.client.session.cookies.set_cookie(cookie)
+
+        if save:
+            if not self.cache_path.exists():
+                self.cache_path.parent.mkdir(parents=True)
+            log.debug(f'Saving session info in cache: {self.cache_path}')
+            with self.cache_path.open('wb') as f:
+                pickle.dump((expiry, userid, jwt_token, list(self.client.session.cookies)), f)
+
+    def _get_oauth_token(self) -> str:
+        headers = {
+            'Sec-Fetch-Mode': 'cors',
+            'X-Requested-With': 'XmlHttpRequest',
+            'Referer': 'https://accounts.google.com/o/oauth2/iframe',
+            'cookie': self.config.oauth_cookie,
+        }
+        # token_url = self.config.get('oauth', 'token_url', 'OAuth Token URL', required=True)
+        # resp = self.client.session.get(token_url, headers=headers)
+        params = {
+            'action': ['issueToken'],
+            'response_type': ['token id_token'],
+            'login_hint': [self.config.oauth_login_hint],
+            'client_id': [self.config.oauth_client_id],
+            'origin': [NEST_URL],
+            'scope': ['openid profile email https://www.googleapis.com/auth/nest-account'],
+            'ss_domain': [NEST_URL],
+        }
+        resp = self.client.session.get(OAUTH_URL, params=params, headers=headers).json()
+        log.log(9, 'Received OAuth response: {}'.format(json.dumps(resp, indent=4, sort_keys=True)))
+        return resp['access_token']
+
+    def _login_via_google(self):
+        token = self._get_oauth_token()
+        headers = {'Authorization': f'Bearer {token}', 'x-goog-api-key': NEST_API_KEY}
+        params = {
+            'embed_google_oauth_access_token': True, 'expire_after': '3600s',
+            'google_oauth_access_token': token, 'policy_id': 'authproxy-oauth-policy',
+        }
+        resp = self.client.session.post(JWT_URL, params=params, headers=headers).json()
+        log.log(9, 'Initialized session; response: {}'.format(json.dumps(resp, indent=4, sort_keys=True)))
+        claims = resp['claims']
+        expiry = datetime_with_tz(claims['expirationTime'], '%Y-%m-%dT%H:%M:%S.%fZ', TZ_UTC).astimezone(TZ_LOCAL)
+        self._register_session(expiry, claims['subject']['nestId']['id'], resp['jwt'], save=True)
+        log.debug(f'Initialized session for user={self.user_id!r} with expiry={localize(expiry)}')
+
+    def _login_via_nest(self):
+        """This login method is deprecated"""
+        log.debug(f'Initializing session for email={self.config.email!r}')
+        resp = self.client.post('session', json={'email': self.config.email, 'password': self.__password})
+        info = resp.json()
+        self.user_id = info['userid']
+        self.client.session.headers['Authorization'] = 'Basic {}'.format(info['access_token'])
+        self.client.session.headers['X-nl-user-id'] = self.user_id
+        self.expiry = expiry = datetime_with_tz(info['expires_in'], '%a, %d-%b-%Y %H:%M:%S %Z')
+        log.debug(f'Initialized legacy session for user={self.user_id!r} with expiry={localize(expiry)}')
+        transport_url = urlparse(info['urls']['transport_url'])
+        self.__dict__['_transport_host_port'] = (transport_url.hostname, transport_url.port)
+
+    @cached_property
+    def __password(self) -> str:
+        if keyring is not None:
+            password = keyring.get_password('NestWebClient', self.config.email)
+            if self._update_pw and password:
+                keyring.delete_password('NestWebClient', self.config.email)
+                password = None
+            if password is None:
+                password = getpass()
+                if not self._no_store_pw and get_input(f'Store password in keyring ({KEYRING_URL})?'):
+                    keyring.set_password('NestWebClient', self.config.email, password)
+                    log.info('Stored password in keyring')
+            else:
+                log.debug('Using password from keyring')
+        else:
+            password = getpass()
+        return password
+
+    def app_launch(self, bucket_types: list[str] = None) -> 'Response':
+        with self.nest_url() as client:
+            payload = {'known_bucket_types': bucket_types or [], 'known_bucket_versions': []}
+            return client.post(f'api/0.1/user/{self.user_id}/app_launch', json=payload)
+
+
+def _filter_capabilities(info):
+    capabilities = {key.split('_', 1)[1]: val for key, val in info['device'].items() if key.startswith('has_')}
+    capabilities['fan_capabilities'] = info['device']['fan_capabilities']
+    return capabilities

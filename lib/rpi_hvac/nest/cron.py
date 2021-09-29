@@ -5,7 +5,7 @@ Cron utilities specifically for working with Nest thermostat schedules
 """
 
 import logging
-from typing import Iterator, Tuple
+from typing import Iterator
 
 from ds_tools.utils.cron import CronSchedule
 
@@ -20,10 +20,9 @@ class NestCronSchedule(CronSchedule):
         if attr := next((attr for attr in ('day', 'month', 'week') if not getattr(cron, attr).all()), None):
             bad = getattr(cron, attr)
             raise ValueError(f'Nest schedules only support minutes, hours, and days of the week - {bad=!r}')
-        # noinspection PyTypeChecker
-        return cron
+        return cron  # noqa
 
-    def __iter__(self) -> Iterator[Tuple[int, int]]:
+    def __iter__(self) -> Iterator[tuple[int, int]]:
         """
         :return iterator: Iterator that yields tuples of (day of week, time of day [seconds])
         """
