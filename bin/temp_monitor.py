@@ -97,6 +97,8 @@ class TempMonitor:
     def maybe_update_nest_status(self, increasing: bool):
         last_td = datetime.now(TZ_LOCAL) - self.last_nest_check
         forced_freq = self.force_check_freq
+        # TODO: On dramatic change (i.e., AC just started), trigger update
+        # TODO: Calculate rate of change; base "dramatic change" on empirical rate
         if (increasing and last_td >= self.nest_check_freq) or (forced_freq is not None and last_td >= forced_freq):
             self.update_nest_status()
 

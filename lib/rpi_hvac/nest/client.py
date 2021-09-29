@@ -9,14 +9,12 @@ import logging
 import pickle
 import time
 from collections import defaultdict
-from configparser import ConfigParser, NoSectionError
 from contextlib import contextmanager
 from datetime import datetime
 from functools import cached_property
 from getpass import getpass
-from pathlib import Path
 from threading import RLock
-from typing import List, Any, Optional
+from typing import Any, Optional
 from urllib.parse import urlparse
 
 try:
@@ -27,16 +25,16 @@ except ImportError:
 from ds_tools.fs.paths import get_user_cache_dir
 from ds_tools.input import get_input
 from requests_client import RequestsClient, USER_AGENT_CHROME
-from tz_aware_dt.tz_aware_dt import datetime_with_tz, localize, TZ_LOCAL, now, TZ_UTC
+from tz_aware_dt.tz_aware_dt import datetime_with_tz, localize, TZ_LOCAL, TZ_UTC
 from tz_aware_dt.utils import format_duration
 from ..utils import celsius_to_fahrenheit as c2f, fahrenheit_to_celsius as f2c
+from .config import NestConfig
 from .exceptions import SessionExpired
 from .schedule import NestSchedule
 
 __all__ = ['NestWebClient']
 log = logging.getLogger(__name__)
 
-DEFAULT_CONFIG_PATH = '~/.config/nest.cfg'
 JWT_URL = 'https://nestauthproxyservice-pa.googleapis.com/v1/issue_jwt'
 KEYRING_URL = 'https://pypi.org/project/keyring/'
 NEST_API_KEY = 'AIzaSyAdkSIMNc51XGNEAYWasX9UOWkS5P6sZE4'  # public key from Nest's website
@@ -46,29 +44,33 @@ OAUTH_URL = 'https://accounts.google.com/o/oauth2/iframerpc'
 
 class NestWebClient(RequestsClient):
     def __init__(
-        self, email=None, serial=None, no_store_prompt=False, update_password=False, config_path=None, reauth=False
+        self,
+        email: str = None,
+        serial: str = None,
+        no_store_prompt: bool = False,
+        update_password: bool = False,
+        config_path: str = None,
+        reauth: bool = False
     ):
         """
-        :param str email: The email address to be used for login
-        :param str serial: The serial number of the thermostat to be managed by this client
-        :param bool no_store_prompt: Do not prompt to store the password securely
-        :param bool update_password: Prompt to update the stored password, even if one already exists
-        :param str config_path: The config path to use
-        :param bool reauth: Force reauth, even if a cached session exists
+        :param email: The email address to be used for login
+        :param serial: The serial number of the thermostat to be managed by this client
+        :param no_store_prompt: Do not prompt to store the password securely
+        :param update_password: Prompt to update the stored password, even if one already exists
+        :param config_path: The config path to use
+        :param reauth: Force reauth, even if a cached session exists
         """
         super().__init__(NEST_URL, user_agent_fmt=USER_AGENT_CHROME, headers={'Referer': NEST_URL})
         self._reauth = reauth
         self._lock = RLock()
-        self._cache_dir = Path(get_user_cache_dir('nest'))
-        self._config_path = Path(config_path or DEFAULT_CONFIG_PATH).expanduser()
+        self._cache_dir = get_user_cache_dir('nest')
+        self.config = NestConfig(config_path, {'email': email, 'serial': serial})
         self._no_store_pw = no_store_prompt
         self._update_pw = update_password
-        self._email = self._get_config('credentials', 'email', 'email address', email, required=True)
         self._session_info = None
         self._session_expiry = None
         self._user_id = None
         self._nest_host_port = ('home.nest.com', None)
-        self._serial = self._get_config('device', 'serial', 'thermostat serial number', serial)
 
     @property
     def user_id(self):
@@ -80,40 +82,6 @@ class NestWebClient(RequestsClient):
     def user_id(self, value):
         self._user_id = value
 
-    @cached_property
-    def _config(self) -> ConfigParser:
-        config = ConfigParser()
-        if self._config_path.exists():
-            with self._config_path.open('r', encoding='utf-8') as f:
-                config.read_file(f)
-        return config
-
-    def _get_config(self, section, key, name=None, new_value=None, save=False, required=False):
-        name = name or key
-        cfg_value = self._config.get(section, key)
-        if cfg_value and new_value:
-            msg = f'Found {name}={cfg_value!r} in {self._config_path} - overwrite with {name}={new_value!r}?'
-            if get_input(msg, skip=save):
-                self._set_config(section, key, new_value)
-        elif required and not cfg_value and not new_value:
-            try:
-                new_value = input(f'Please enter your Nest {name}: ').strip()
-            except EOFError as e:
-                raise RuntimeError('Unable to read stdin (this is often caused by piped input)') from e
-            if not new_value:
-                raise ValueError(f'Invalid {name}')
-            self._set_config(section, key, new_value)
-        return new_value or cfg_value
-
-    def _set_config(self, section, key, value):
-        try:
-            self._config.set(section, key, value)
-        except NoSectionError:
-            self._config.add_section(section)
-            self._config.set(section, key, value)
-        with self._config_path.open('w', encoding='utf-8') as f:
-            self._config.write(f)
-
     def _maybe_refresh_login(self):
         with self._lock:
             if self._session_expiry is None or self._session_expiry < datetime.now(TZ_LOCAL):
@@ -123,7 +91,7 @@ class NestWebClient(RequestsClient):
                     except KeyError:
                         pass
 
-                if 'oauth' in self._config:
+                if 'oauth' in self.config:
                     try:
                         self._load_cached_session()
                     except SessionExpired as e:
@@ -132,7 +100,7 @@ class NestWebClient(RequestsClient):
                 else:
                     self._login_via_nest()
 
-    @property
+    @cached_property
     def _cached_session_path(self):
         return self._cache_dir.joinpath('session.pickle')
 
@@ -141,16 +109,18 @@ class NestWebClient(RequestsClient):
             'Sec-Fetch-Mode': 'cors',
             'X-Requested-With': 'XmlHttpRequest',
             'Referer': 'https://accounts.google.com/o/oauth2/iframe',
-            'cookie': self._get_config('oauth', 'cookie', 'OAuth Cookie', required=True)
+            'cookie': self.config.oauth_cookie,
         }
-        # token_url = self._get_config('oauth', 'token_url', 'OAuth Token URL', required=True)
+        # token_url = self.config.get('oauth', 'token_url', 'OAuth Token URL', required=True)
         # resp = self.session.get(token_url, headers=headers)
-        login_hint = self._get_config('oauth', 'login_hint', 'OAuth login_hint', required=True)
-        client_id = self._get_config('oauth', 'client_id', 'OAuth client_id', required=True)
         params = {
-            'action': ['issueToken'], 'response_type': ['token id_token'],
-            'login_hint': [login_hint], 'client_id': [client_id], 'origin': [NEST_URL],
-            'scope': ['openid profile email https://www.googleapis.com/auth/nest-account'], 'ss_domain': [NEST_URL],
+            'action': ['issueToken'],
+            'response_type': ['token id_token'],
+            'login_hint': [self.config.oauth_login_hint],
+            'client_id': [self.config.oauth_client_id],
+            'origin': [NEST_URL],
+            'scope': ['openid profile email https://www.googleapis.com/auth/nest-account'],
+            'ss_domain': [NEST_URL],
         }
         resp = self.session.get(OAUTH_URL, params=params, headers=headers).json()
         log.log(9, 'Received OAuth response: {}'.format(json.dumps(resp, indent=4, sort_keys=True)))
@@ -159,16 +129,14 @@ class NestWebClient(RequestsClient):
     def _load_cached_session(self):
         if self._reauth:
             raise SessionExpired('Forced reauth')
-
-        path = self._cached_session_path
-        if path.exists():
-            with path.open('rb') as f:
+        elif self._cached_session_path.exists():
+            with self._cached_session_path.open('rb') as f:
                 try:
                     expiry, userid, jwt_token, cookies = pickle.load(f)
                 except (TypeError, ValueError) as e:
                     raise SessionExpired(f'Found a cached session, but encountered an error loading it: {e}')
 
-            if expiry < now(as_datetime=True) or any(cookie.expires < time.time() for cookie in cookies):
+            if expiry < datetime.now(TZ_LOCAL) or any(cookie.expires < time.time() for cookie in cookies):
                 raise SessionExpired('Found a cached session, but it expired')
 
             self._register_session(expiry, userid, jwt_token, cookies)
@@ -176,7 +144,7 @@ class NestWebClient(RequestsClient):
         else:
             raise SessionExpired('No cached session was found')
 
-    def _register_session(self, expiry, userid, jwt_token, cookies=None, save=False):
+    def _register_session(self, expiry: datetime, userid: str, jwt_token: str, cookies=None, save: bool = False):
         self._session_expiry = expiry
         self.user_id = userid
         self.session.headers['Authorization'] = f'Basic {jwt_token}'
@@ -185,9 +153,10 @@ class NestWebClient(RequestsClient):
                 self.session.cookies.set_cookie(cookie)
 
         if save:
-            path = self._cached_session_path
-            log.debug(f'Saving session info in cache: {path}')
-            with path.open('wb') as f:
+            if not self._cached_session_path.exists():
+                self._cached_session_path.parent.mkdir(parents=True)
+            log.debug(f'Saving session info in cache: {self._cached_session_path}')
+            with self._cached_session_path.open('wb') as f:
                 pickle.dump((expiry, userid, jwt_token, list(self.session.cookies)), f)
 
     def _login_via_google(self):
@@ -206,8 +175,8 @@ class NestWebClient(RequestsClient):
 
     def _login_via_nest(self):
         """This login method is deprecated"""
-        log.debug(f'Initializing session for email={self._email!r}')
-        resp = self.post('session', json={'email': self._email, 'password': self.__password})
+        log.debug(f'Initializing session for email={self.config.email!r}')
+        resp = self.post('session', json={'email': self.config.email, 'password': self.__password})
         info = resp.json()
         self.user_id = info['userid']
         self.session.headers['Authorization'] = 'Basic {}'.format(info['access_token'])
@@ -220,14 +189,14 @@ class NestWebClient(RequestsClient):
     @cached_property
     def __password(self):
         if keyring is not None:
-            password = keyring.get_password(type(self).__name__, self._email)
+            password = keyring.get_password(type(self).__name__, self.config.email)
             if self._update_pw and password:
-                keyring.delete_password(type(self).__name__, self._email)
+                keyring.delete_password(type(self).__name__, self.config.email)
                 password = None
             if password is None:
                 password = getpass()
                 if not self._no_store_pw and get_input(f'Store password in keyring ({KEYRING_URL})?'):
-                    keyring.set_password(type(self).__name__, self._email, password)
+                    keyring.set_password(type(self).__name__, self.config.email, password)
                     log.info('Stored password in keyring')
             else:
                 log.debug('Using password from keyring')
@@ -263,21 +232,23 @@ class NestWebClient(RequestsClient):
 
     @cached_property
     def serial(self):
-        if not self._serial:
+        serial = self.config.serial
+        if not serial:
             resp = self.app_launch(['device'])
             if len(resp) > 1:
                 serials = ', '.join(sorted(resp.keys()))
                 raise RuntimeError(
-                    f'A device serial number must be provided in {self._config_path} or at init - found multiple '
+                    f'A device serial number must be provided in {self.config.path} or at init - found multiple '
                     f'devices: {serials}'
                 )
             elif not resp:
                 raise RuntimeError('No devices were found')
-            self._serial = next(iter(resp))
-            self._set_config('device', 'serial', self._serial)
-        return self._serial
 
-    def _app_launch(self, bucket_types: List[str], raw=False):
+            serial = next(iter(resp))
+            self.config.set('device', 'serial', serial)
+        return serial
+
+    def _app_launch(self, bucket_types: list[str], raw: bool = False):
         with self.nest_url():
             payload = {'known_bucket_types': bucket_types, 'known_bucket_versions': []}
             resp = self.post(f'api/0.1/user/{self.user_id}/app_launch', json=payload)
@@ -401,7 +372,7 @@ class NestWebClient(RequestsClient):
 
     def get_mode(self):
         resp = self.app_launch(['shared'])
-        return resp[self._serial]['shared']['target_temperature_type']
+        return resp[self.serial]['shared']['target_temperature_type']
 
     def set_temp_range(self, low, high, unit='f'):
         """
