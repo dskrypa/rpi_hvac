@@ -18,6 +18,15 @@ To install it directly, use the following::
     $ pip install git+git://github.com/dskrypa/rpi_hvac
 
 
+Alternatively, you can also do::
+
+    $ git clone https://github.com/dskrypa/rpi_hvac.git
+    $ cd rpi_hvac
+    $ python -m venv venv
+    $ . venv/bin/activate  # note: venv/Scripts/activate on Windows
+    $ pip install -e .
+
+
 Configuration
 -------------
 
