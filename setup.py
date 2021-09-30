@@ -50,7 +50,8 @@ setup(
     long_description=long_description,
     url=about['__url__'],
     project_urls={'Source': about['__url__']},
-    packages=['lib/...'],
+    packages=['rpi_hvac'],
+    package_dir={'': 'lib'},
     classifiers=[
         'Programming Language :: Python :: 3',
         'Programming Language :: Python :: 3.8',
