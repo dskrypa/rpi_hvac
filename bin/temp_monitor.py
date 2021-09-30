@@ -4,15 +4,15 @@ import sys
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, PROJECT_ROOT.joinpath('bin').as_posix())
+sys.path.insert(0, PROJECT_ROOT.joinpath('lib').as_posix())
 import _venv  # This will activate the venv, if it exists and is not already active
 
 import logging
 import time
+# from collections import deque
 from datetime import datetime, timedelta
 from requests import Session, RequestException
 
-sys.path.append(PROJECT_ROOT.joinpath('lib').as_posix())
 from rpi_hvac.__version__ import __author_email__, __version__
 from rpi_hvac.nest.client import NestWebClient
 from tz_aware_dt.tz_aware_dt import TZ_LOCAL

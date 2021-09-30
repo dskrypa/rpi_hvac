@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-import platform
+from itertools import chain
 from pathlib import Path
 from setuptools import setup
 
@@ -14,18 +14,30 @@ with project_root.joinpath('lib', 'rpi_hvac', '__version__.py').open('r', encodi
     exec(f.read(), about)
 
 
+optional_dependencies = {
+    'dev': [                                            # Development env requirements
+        'ipython',
+        'pre-commit',                                   # run `pre-commit install` to install hooks
+    ],
+    'sensehat': ['psutil', 'sense_hat'],
+    'sensor': [
+        'adafruit-circuitpython-dht',
+        'werkzeug',
+        'flask',
+        'jinja2',
+        'gevent',
+        'flask_socketio; platform_system=="Windows"',
+        'gunicorn; platform_system!="Windows"',
+    ],
+}
+optional_dependencies['ALL'] = sorted(set(chain.from_iterable(optional_dependencies.values())))
+
 requirements = [
     'ds_tools@ git+git://github.com/dskrypa/ds_tools',
     'requests_client@ git+git://github.com/dskrypa/requests_client',
-    'tz_aware_dt @ git+git://github.com/dskrypa/tz_aware_dt',
-    'adafruit-circuitpython-dht',
-    'flask',
-    'gevent',
+    'tz_aware_dt@ git+git://github.com/dskrypa/tz_aware_dt',
     'keyring',
-    'psutil',
     'requests',
-    'werkzeug',
-    'flask_socketio' if platform.system() == 'Windows' else 'gunicorn',
 ]
 
 
@@ -45,5 +57,5 @@ setup(
     ],
     python_requires='~=3.8',
     install_requires=requirements,
-    extras_require={'sensehat': ['sense_hat'], 'DHT': ['Adafruit_DHT'], 'dev': ['pre-commit', 'ipython']},
+    extras_require=optional_dependencies,
 )
