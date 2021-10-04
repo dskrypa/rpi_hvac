@@ -440,7 +440,7 @@ class NestWebSession:
                 self.client.session.cookies.set_cookie(cookie)
 
         if save:
-            if not self.cache_path.exists():
+            if not self.cache_path.parent.exists():
                 self.cache_path.parent.mkdir(parents=True)
             log.debug(f'Saving session info in cache: {self.cache_path}')
             with self.cache_path.open('wb') as f:

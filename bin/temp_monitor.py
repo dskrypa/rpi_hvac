@@ -29,7 +29,9 @@ def parser():
     parser.add_argument('--delay', '-d', type=int, default=15, help='Delay between checks')
     parser.add_argument('--config', '-c', metavar='PATH', default='~/.config/nest.cfg', help='Config file location')
     parser.add_argument('--reauth', '-A', action='store_true', help='Force re-authentication, even if a cached session exists')
-    parser.add_argument('--force_check_freq', '-f', type=int, help='Frequency in minutes to force a Nest status check, even if temp is not increasing')
+    mgroup = parser.add_mutually_exclusive_group()
+    mgroup.add_argument('--force_check_freq', '-f', type=int, help='Frequency in minutes to force a Nest status check, even if temp is not increasing')
+    mgroup.add_argument('--no_nest', '-N', action='store_true', help='Disable Nest checks - only process sensor data')
     parser.include_common_args('verbosity')
     return parser
 
@@ -39,7 +41,10 @@ def main():
     args = parser().parse_args(req_subparser_value=True)
     init_logging(args.verbose, names_add=['rpi_hvac'], entry_fmt=ENTRY_FMT_DETAILED)
 
-    monitor = TempMonitor(args.server, args.delay, args.config, args.reauth, force_check_freq=args.force_check_freq)
+    monitor = TempMonitor(
+        args.server, args.delay, args.config, args.reauth,
+        force_check_freq=args.force_check_freq, disable_nest=args.no_nest,
+    )
     monitor.run()
 
 
@@ -52,9 +57,11 @@ class TempMonitor:
         nest_reauth,
         nest_check_freq: int = 180,
         force_check_freq: int = None,
+        disable_nest: bool = False,
     ):
         self.url = f'http://{server}/read'
         self.session = Session()
+        self.nest_disabled = disable_nest
         self.nest = NestWebClient(config_path=nest_config, reauth=nest_reauth)
         self.nest_check_freq = timedelta(seconds=nest_check_freq)
         if force_check_freq and force_check_freq < 1:
@@ -82,7 +89,7 @@ class TempMonitor:
             raise ReadRequestError(f'Error reading temperature from server: {resp} - {resp.text}')
 
     def update_nest_status(self):
-        nest_status = self.nest.get_state()
+        nest_status = self.nest.get_state()  # Returns c/f based on config
         self.last_nest_check = datetime.now(TZ_LOCAL)
         self.nest_running = nest_status['fan_current_speed'] != 'off'
         self.nest_mode = nest_status['current_schedule_mode'].upper()
@@ -102,16 +109,20 @@ class TempMonitor:
         temp_f = temp_c * 9 / 5 + 32
         increasing = temp_c > self.last_temp
         self.last_temp = temp_c
-        self.maybe_update_nest_status(increasing)
         message = f'{temp_f=:.2f} F / {temp_c=:.2f} C - {increasing=} | {humidity=:.2f}%'
-        if self.nest_mode is not None:
-            last = self.last_nest_check.strftime('%Y-%m-%d %H:%M:%S %Z')
-            message += (
-                f' | Nest mode={self.nest_mode} running={self.nest_running} current={self.nest_current:.2f}'
-                f' target={self.nest_target:.2f} (last check: {last})'
-            )
+
+        if self.nest_disabled:
+            message += ' | Nest [check disabled]'
         else:
-            message += ' | Nest mode=? running=? current=? target=? (last check: -)'
+            self.maybe_update_nest_status(increasing)
+            if self.nest_mode is not None:
+                last = self.last_nest_check.strftime('%Y-%m-%d %H:%M:%S %Z')
+                message += (
+                    f' | Nest mode={self.nest_mode} running={self.nest_running} current={self.nest_current:.2f}'
+                    f' target={self.nest_target:.2f} (last check: {last})'
+                )
+            else:
+                message += ' | Nest mode=? running=? current=? target=? (last check: -)'
 
         log.info(message)
 
