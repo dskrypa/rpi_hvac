@@ -20,8 +20,7 @@ from pathlib import Path
 from flask import Flask, jsonify
 from werkzeug.http import HTTP_STATUS_CODES as codes
 
-BASE_DIR = Path(__file__).resolve().parents[1]
-sys.path.append(BASE_DIR.joinpath('lib').as_posix())
+sys.path.append(Path(__file__).resolve().parents[1].joinpath('lib').as_posix())
 from ds_tools.logging import init_logging
 from rpi_hvac.rpi import Dht22Sensor, SensorReadFailed
 
@@ -69,16 +68,15 @@ def read_sensors():
 
 class ResponseException(Exception):
     def __init__(self, code, reason):
-        super().__init__()
         self.code = code
         self.reason = reason
         log.error(self.reason, exc_info=isinstance(reason, Exception))
 
     def __repr__(self):
-        return '<{}({}, {!r})>'.format(type(self).__name__, self.code, self.reason)
+        return f'<{type(self).__name__}({self.code}, {self.reason!r})>'
 
     def __str__(self):
-        return '{}: [{}] {}'.format(type(self).__name__, self.code, self.reason)
+        return f'{type(self).__name__}: [{self.code}] {self.reason}'
 
     def as_response(self):
         resp = jsonify({'error_code': codes[self.code], 'error': self.reason})

@@ -109,7 +109,7 @@ class TempMonitor:
         temp_f = temp_c * 9 / 5 + 32
         increasing = temp_c > self.last_temp
         self.last_temp = temp_c
-        message = f'{temp_f=:.2f} F / {temp_c=:.2f} C - {increasing=} | {humidity=:.2f}%'
+        message = f'{temp_f=:.2f}\u00b0F / {temp_c=:.2f}\u00b0C - {increasing=} | {humidity=:.2f}%'
 
         if self.nest_disabled:
             message += ' | Nest [check disabled]'

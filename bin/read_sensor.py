@@ -4,8 +4,7 @@ import logging
 import sys
 from pathlib import Path
 
-BASE_DIR = Path(__file__).resolve().parents[1]
-sys.path.append(BASE_DIR.joinpath('lib').as_posix())
+sys.path.append(Path(__file__).resolve().parents[1].joinpath('lib').as_posix())
 from ds_tools.argparsing.argparser import ArgParser
 from ds_tools.core.main import wrap_main
 from ds_tools.logging import init_logging
@@ -25,11 +24,10 @@ def main():
     init_logging(args.verbose, names=None, log_path=None)
 
     sensor = Dht22Sensor(args.max_retries)
-    humidity, temp = sensor.read()
-    if args.unit == 'f':
-        temp = c2f(temp)
+    humidity, temperature = sensor.read()
     unit = args.unit.upper()
-    print(f'{humidity=} % temperature={temp} \u00b0{unit}')
+    temperature = c2f(temperature) if unit == 'F' else temperature
+    print(f'{humidity=:.2f}% {temperature=:.2f}\u00b0{unit}')
 
 
 if __name__ == '__main__':
