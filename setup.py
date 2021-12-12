@@ -35,8 +35,7 @@ optional_dependencies['ALL'] = sorted(set(chain.from_iterable(optional_dependenc
 requirements = [
     'ds_tools@ git+git://github.com/dskrypa/ds_tools',
     'requests_client@ git+git://github.com/dskrypa/requests_client',
-    'tz_aware_dt@ git+git://github.com/dskrypa/tz_aware_dt',
-    'keyring',
+    'nest-client@ git+git://github.com/dskrypa/nest-client',
     'requests',
 ]
 
@@ -54,10 +53,10 @@ setup(
     package_dir={'': 'lib'},
     classifiers=[
         'Programming Language :: Python :: 3',
-        'Programming Language :: Python :: 3.8',
+        'Programming Language :: Python :: 3.9',
+        'Programming Language :: Python :: 3.10',
     ],
-    python_requires='~=3.8',
+    python_requires='~=3.9',
     install_requires=requirements,
     extras_require=optional_dependencies,
-    entry_points={'console_scripts': ['nest=rpi_hvac.nest.cli:main']},
 )

@@ -1,5 +1,5 @@
 """
-Library for interacting with the Nest thermostat via the cloud API
+Temperature conversion utils
 
 :author: Doug Skrypa
 """
@@ -7,7 +7,7 @@ Library for interacting with the Nest thermostat via the cloud API
 import logging
 import math
 
-__all__ = ['celsius_to_fahrenheit', 'fahrenheit_to_celsius', 'estimate_ambient', 'secs_to_wall', 'wall_to_secs']
+__all__ = ['celsius_to_fahrenheit', 'fahrenheit_to_celsius', 'estimate_ambient']
 log = logging.getLogger(__name__)
 
 
@@ -17,16 +17,6 @@ def celsius_to_fahrenheit(deg_c):
 
 def fahrenheit_to_celsius(deg_f):
     return (deg_f - 32) * 5 / 9
-
-
-def secs_to_wall(seconds: int):
-    hour, minute = divmod(seconds // 60, 60)
-    return f'{hour:02d}:{minute:02d}'
-
-
-def wall_to_secs(wall: str):
-    hour, minute = map(int, wall.split(':'))
-    return (hour * 60 + minute) * 60
 
 
 # ----------------------------------------------------------------------------------------------------------------------

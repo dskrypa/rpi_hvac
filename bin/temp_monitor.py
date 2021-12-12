@@ -14,8 +14,7 @@ from datetime import datetime, timedelta
 from requests import Session, RequestException
 
 from rpi_hvac.__version__ import __author_email__, __version__
-from rpi_hvac.nest.client import NestWebClient
-from tz_aware_dt.tz_aware_dt import TZ_LOCAL
+from nest.client import NestWebClient
 from ds_tools.argparsing import ArgParser
 from ds_tools.core.main import wrap_main
 from ds_tools.logging import init_logging, ENTRY_FMT_DETAILED
@@ -69,12 +68,13 @@ class TempMonitor:
         self.force_check_freq = timedelta(minutes=force_check_freq) if force_check_freq else None
         self.last_temp = 100
         init_td = max(self.nest_check_freq, self.force_check_freq) if force_check_freq else self.nest_check_freq
-        self.last_nest_check = datetime.now(TZ_LOCAL) - init_td - timedelta(seconds=1)
+        self.last_nest_check = datetime.now() - init_td - timedelta(seconds=1)
         self.delay = delay
         self.nest_mode = None
         self.nest_running = False
         self.nest_current = None
         self.nest_target = None
+        self._nest_device = None
 
     def read_sensor(self):
         log.debug(f'GET -> {self.url}')
@@ -89,15 +89,20 @@ class TempMonitor:
             raise ReadRequestError(f'Error reading temperature from server: {resp} - {resp.text}')
 
     def update_nest_status(self):
-        nest_status = self.nest.get_state()  # Returns c/f based on config
-        self.last_nest_check = datetime.now(TZ_LOCAL)
-        self.nest_running = nest_status['fan_current_speed'] != 'off'
-        self.nest_mode = nest_status['current_schedule_mode'].upper()
-        self.nest_current = nest_status['current_temperature']
-        self.nest_target = nest_status['target_temperature']
+        if self._nest_device is None:
+            device = self._nest_device = self.nest.get_device()
+        else:
+            device = self._nest_device
+            device.refresh()
+
+        self.last_nest_check = datetime.now()
+        self.nest_running = device.shared.running
+        self.nest_mode = device.shared.mode
+        self.nest_current = device.shared.current_temperature
+        self.nest_target = device.shared.target_temperature
 
     def maybe_update_nest_status(self, increasing: bool):
-        last_td = datetime.now(TZ_LOCAL) - self.last_nest_check
+        last_td = datetime.now() - self.last_nest_check
         forced_freq = self.force_check_freq
         # TODO: On dramatic change (i.e., AC just started), trigger update
         # TODO: Calculate rate of change; base "dramatic change" on empirical rate
