@@ -31,6 +31,7 @@ class Dht22Sensor:
         self.sensor = DHT22(pin, False)
         self.max_retries = max_retries
         self._last = 0
+        self._last_temp = None
 
     def measure(self) -> tuple[float, float]:
         """
@@ -38,6 +39,7 @@ class Dht22Sensor:
         called before the read delay has elapsed.  Prevents returning stale data, and returns both humidity and
         temperature in the same call instead of storing them and returning nothing.
         """
+        last_measure = self._last
         to_wait = READ_DELAY - (time.monotonic() - self._last)
         if to_wait > 0:
             log.debug(f'Waiting {to_wait:.3f} s before reading sensor')
@@ -64,7 +66,13 @@ class Dht22Sensor:
             temperature = -temperature
 
         if not 0 < humidity < 100:
-            raise RuntimeError(f'Received implausible data ({temperature=}, {humidity=}) - try again')
+            raise SensorReadFailed(f'Received implausible data ({temperature=}, {humidity=}) - try again')
+        if self._last_temp is not None:
+            delta = abs(self._last_temp - temperature)
+            if delta > 5 and (time.monotonic() - last_measure) < 180:
+                raise SensorReadFailed(f'Received implausible data ({temperature=}, {humidity=}) - try again')
+
+        self._last_temp = temperature
 
         return humidity, temperature
 

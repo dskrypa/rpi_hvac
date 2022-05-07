@@ -14,7 +14,7 @@ from datetime import datetime, timedelta
 from requests import Session, RequestException
 
 from rpi_hvac.__version__ import __author_email__, __version__
-from nest.client import NestWebClient
+# from nest_client.client import NestWebClient
 from ds_tools.argparsing import ArgParser
 from ds_tools.core.main import wrap_main
 from ds_tools.logging import init_logging, ENTRY_FMT_DETAILED
@@ -61,7 +61,7 @@ class TempMonitor:
         self.url = f'http://{server}/read'
         self.session = Session()
         self.nest_disabled = disable_nest
-        self.nest = NestWebClient(config_path=nest_config, reauth=nest_reauth)
+        # self.nest = NestWebClient(config_path=nest_config, reauth=nest_reauth)
         self.nest_check_freq = timedelta(seconds=nest_check_freq)
         if force_check_freq and force_check_freq < 1:
             raise ValueError('--force_check_freq / -f must be a positive integer')
@@ -89,17 +89,18 @@ class TempMonitor:
             raise ReadRequestError(f'Error reading temperature from server: {resp} - {resp.text}')
 
     def update_nest_status(self):
-        if self._nest_device is None:
-            device = self._nest_device = self.nest.get_device()
-        else:
-            device = self._nest_device
-            device.refresh()
-
-        self.last_nest_check = datetime.now()
-        self.nest_running = device.shared.running
-        self.nest_mode = device.shared.mode
-        self.nest_current = device.shared.current_temperature
-        self.nest_target = device.shared.target_temperature
+        pass
+        # if self._nest_device is None:
+        #     device = self._nest_device = self.nest.get_device()
+        # else:
+        #     device = self._nest_device
+        #     device.refresh()
+        #
+        # self.last_nest_check = datetime.now()
+        # self.nest_running = device.shared.running
+        # self.nest_mode = device.shared.mode
+        # self.nest_current = device.shared.current_temperature
+        # self.nest_target = device.shared.target_temperature
 
     def maybe_update_nest_status(self, increasing: bool):
         last_td = datetime.now() - self.last_nest_check
