@@ -94,15 +94,12 @@ class Dht22Sensor:
         """
         trig_wait = self.sensor._trig_wait / 1_000_000
         with DigitalInOut(self.sensor._pin) as dht_pin:
-            # transitions = array('d')
-            transitions = array('Q')
+            transitions = array('Q')  # 'd' for monotonic()
             add_transition = transitions.append
             # Signal by setting pin high, then low, and releasing
             dht_pin.direction = Direction.OUTPUT
-
             dht_pin.value = True
             sleep(0.1)
-
             dht_pin.value = False
             sleep(trig_wait)  # Using the time to pull-down the line according to DHT Model
 
@@ -115,17 +112,14 @@ class Dht22Sensor:
                 # blinka.microcontroller.generic_linux.libgpiod_pin does not support internal pull resistors.
                 dht_pin.pull = None
 
+            # while monotonic() - timestamp < 0.25:
             while monotonic_ns() - timestamp < 250_000_000:
                 if dht_val != dht_pin.value:
                     dht_val = not dht_val  # we toggled
+                    # add_transition(monotonic())
                     add_transition(monotonic_ns())
 
-            # while monotonic() - timestamp < 0.25:
-            #     if dht_val != dht_pin.value:
-            #         dht_val = not dht_val  # we toggled
-            #         add_transition(monotonic())  # save the timestamp
-
-        log.debug(f'Transitions ({len(transitions)}): {transitions}')
+        # log.debug(f'Transitions ({len(transitions)}): {transitions}')
         pulses = transitions_to_pulses(transitions)
         return pulses
 
@@ -175,7 +169,7 @@ def pulse_to_binary(pulses: Sequence[int]) -> int:
 
 def transitions_to_pulses(transitions: Sequence[float], max_pulses: int = 81) -> array:
     start = max(0, len(transitions) - max_pulses - 1)
-    log.debug(f'Converting transitions to pulses with {start=}')
+    # log.debug(f'Converting transitions to pulses with {start=}')
     # return array('H', (min(int(1_000_000 * (b - a)), 65535) for a, b in pairwise(transitions[start:])))
     return array('H', (min((b - a) // 1000, 65535) for a, b in pairwise(transitions[start:])))
 
