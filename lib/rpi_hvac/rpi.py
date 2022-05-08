@@ -7,6 +7,7 @@ Utilities for working with the Raspberry Pi's SenseHat
 import logging
 from array import array
 from time import sleep, monotonic
+from typing import Sequence
 
 try:
     from itertools import pairwise
@@ -38,11 +39,12 @@ READ_DELAY = 2
 class Dht22Sensor:
     """Represents an Adafruit DHT22 sensor"""
 
-    def __init__(self, max_retries: int = 4, pin=D4):
+    def __init__(self, max_retries: int = 4, pin=D4, min_temp: float = 0, max_temp: float = 50):
         self.sensor = DHT22(pin, False)
         self.max_retries = max_retries
+        self.min_temp = min_temp
+        self.max_temp = max_temp
         self._last = 0
-        # self._last_temp = None
 
     def measure(self) -> tuple[float, float]:
         """
@@ -50,7 +52,6 @@ class Dht22Sensor:
         called before the read delay has elapsed.  Prevents returning stale data, and returns both humidity and
         temperature in the same call instead of storing them and returning nothing.
         """
-        # last_measure = self._last
         to_wait = READ_DELAY - (monotonic() - self._last)
         if to_wait > 0:
             log.debug(f'Waiting {to_wait:.3f} s before reading sensor')
@@ -58,7 +59,7 @@ class Dht22Sensor:
 
         # pulses = self.sensor._get_pulses_bitbang()
         pulses = self._get_pulses_bitbang()
-        log.debug(f'Pulses ({len(pulses)}): {pulses}')
+        # log.debug(f'Pulses ({len(pulses)}): {pulses}')
         self._last = monotonic()
         if len(pulses) < 10:  # Probably a connection issue
             raise SensorReadFailed('DHT sensor not found - check wiring')
@@ -66,15 +67,10 @@ class Dht22Sensor:
         #     raise SensorReadFailed(f'A full buffer was not returned - only received {len(pulses)} bits - try again')
 
         buf = pulses_to_binary(pulses)
+        # log.debug(f'Converted buffer ({len(buf)}): {buf}')
         if len(buf) < 5:
             raise SensorReadFailed(f'A full buffer was not returned - only received {len(pulses)} bits - try again')
-        # buf = array('B')
-        # for byte_start in range(0, 80, 16):
-        #     buf.append(self.sensor._pulses_to_binary(pulses, byte_start, byte_start + 16))
-
-        log.debug(f'Converted buffer ({len(buf)}): {buf}')
-
-        if sum(buf[0:4]) & 0xFF != buf[4]:
+        elif sum(buf[0:4]) & 0xFF != buf[4]:
             raise SensorReadFailed(f'Checksum did not validate - try again (received {len(pulses)} pulses)')
 
         humidity = ((buf[0] << 8) | buf[1]) / 10
@@ -83,14 +79,8 @@ class Dht22Sensor:
         if buf[2] & 0x80:
             temperature = -temperature
 
-        if not (0 < humidity < 100 and 0 < temperature < 50):
+        if not (0 < humidity < 100 and self.min_temp < temperature < self.max_temp):
             raise SensorReadFailed(f'Received implausible data ({temperature=}, {humidity=}) - try again')
-        # if self._last_temp is not None:
-        #     delta = abs(self._last_temp - temperature)
-        #     if delta > 5 and (monotonic() - last_measure) < 180:
-        #         raise SensorReadFailed(f'Received implausible data ({temperature=}, {humidity=}) - try again')
-        #
-        # self._last_temp = temperature
 
         return humidity, temperature
 
@@ -104,7 +94,9 @@ class Dht22Sensor:
         """
         trig_wait = self.sensor._trig_wait / 1_000_000
         with DigitalInOut(self.sensor._pin) as dht_pin:
-            transitions = []
+            # transitions = []
+            transitions = array('f')
+            add_transition = transitions.append
             # Signal by setting pin high, then low, and releasing
             dht_pin.direction = Direction.OUTPUT
 
@@ -123,11 +115,19 @@ class Dht22Sensor:
                 # blinka.microcontroller.generic_linux.libgpiod_pin does not support internal pull resistors.
                 dht_pin.pull = None
 
-            # while monotonic() - timestamp < 0.25:
-            while monotonic() - timestamp < 0.3:
+            ts = monotonic()
+            while ts - timestamp < 0.25:
                 if dht_val != dht_pin.value:
                     dht_val = not dht_val  # we toggled
-                    transitions.append(monotonic())  # save the timestamp
+                    ts = monotonic()
+                    add_transition(ts)
+                else:
+                    ts = monotonic()
+
+            # while monotonic() - timestamp < 0.25:
+            #     if dht_val != dht_pin.value:
+            #         dht_val = not dht_val  # we toggled
+            #         add_transition(monotonic())  # save the timestamp
 
         log.debug(f'Transitions ({len(transitions)}): {transitions}')
         pulses = transitions_to_pulses(transitions)
@@ -166,18 +166,18 @@ class Dht22Sensor:
                 return sensor._humidity, sensor._temperature
 
 
-def pulses_to_binary(pulses: array) -> array:
+def pulses_to_binary(pulses: Sequence[int]) -> array:
     return array('B', (pulse_to_binary(pulses[i:i + 16]) for i in range(0, 80, 16)))
 
 
-def pulse_to_binary(pulses: array) -> int:
+def pulse_to_binary(pulses: Sequence[int]) -> int:
     b = 0
     for pulse in pulses[1::2]:
         b = b << 1 | (pulse > 51)
     return b
 
 
-def transitions_to_pulses(transitions: list[float], max_pulses: int = 81) -> array:
+def transitions_to_pulses(transitions: Sequence[float], max_pulses: int = 81) -> array:
     start = max(0, len(transitions) - max_pulses - 1)
     log.debug(f'Converting transitions to pulses with {start=}')
     return array('H', (min(int(1_000_000 * (b - a)), 65535) for a, b in pairwise(transitions[start:])))
