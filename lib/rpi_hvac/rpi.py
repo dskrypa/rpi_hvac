@@ -6,7 +6,7 @@ Utilities for working with the Raspberry Pi's SenseHat
 
 import logging
 from array import array
-from time import sleep, monotonic
+from time import sleep, monotonic, monotonic_ns
 from typing import Sequence
 
 try:
@@ -94,8 +94,8 @@ class Dht22Sensor:
         """
         trig_wait = self.sensor._trig_wait / 1_000_000
         with DigitalInOut(self.sensor._pin) as dht_pin:
-            # transitions = []
-            transitions = array('d')
+            # transitions = array('d')
+            transitions = array('Q')
             add_transition = transitions.append
             # Signal by setting pin high, then low, and releasing
             dht_pin.direction = Direction.OUTPUT
@@ -107,7 +107,7 @@ class Dht22Sensor:
             sleep(trig_wait)  # Using the time to pull-down the line according to DHT Model
 
             dht_val = True  # start with dht pin true because its pulled up
-            timestamp = monotonic()
+            timestamp = monotonic_ns()
             dht_pin.direction = Direction.INPUT
             try:
                 dht_pin.pull = Pull.UP
@@ -115,14 +115,10 @@ class Dht22Sensor:
                 # blinka.microcontroller.generic_linux.libgpiod_pin does not support internal pull resistors.
                 dht_pin.pull = None
 
-            ts = monotonic()
-            while ts - timestamp < 0.25:
+            while monotonic_ns() - timestamp < 250:
                 if dht_val != dht_pin.value:
                     dht_val = not dht_val  # we toggled
-                    ts = monotonic()
-                    add_transition(ts)
-                else:
-                    ts = monotonic()
+                    add_transition(monotonic_ns())
 
             # while monotonic() - timestamp < 0.25:
             #     if dht_val != dht_pin.value:
@@ -180,7 +176,8 @@ def pulse_to_binary(pulses: Sequence[int]) -> int:
 def transitions_to_pulses(transitions: Sequence[float], max_pulses: int = 81) -> array:
     start = max(0, len(transitions) - max_pulses - 1)
     log.debug(f'Converting transitions to pulses with {start=}')
-    return array('H', (min(int(1_000_000 * (b - a)), 65535) for a, b in pairwise(transitions[start:])))
+    # return array('H', (min(int(1_000_000 * (b - a)), 65535) for a, b in pairwise(transitions[start:])))
+    return array('H', (min((b - a) // 1000, 65535) for a, b in pairwise(transitions[start:])))
 
 
 class EnvSensor:
