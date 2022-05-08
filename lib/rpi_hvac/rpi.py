@@ -95,7 +95,7 @@ class Dht22Sensor:
         trig_wait = self.sensor._trig_wait / 1_000_000
         with DigitalInOut(self.sensor._pin) as dht_pin:
             # transitions = []
-            transitions = array('f')
+            transitions = array('d')
             add_transition = transitions.append
             # Signal by setting pin high, then low, and releasing
             dht_pin.direction = Direction.OUTPUT
