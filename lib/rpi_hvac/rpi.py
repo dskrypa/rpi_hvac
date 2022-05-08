@@ -115,7 +115,7 @@ class Dht22Sensor:
                 # blinka.microcontroller.generic_linux.libgpiod_pin does not support internal pull resistors.
                 dht_pin.pull = None
 
-            while monotonic_ns() - timestamp < 250:
+            while monotonic_ns() - timestamp < 250_000_000:
                 if dht_val != dht_pin.value:
                     dht_val = not dht_val  # we toggled
                     add_transition(monotonic_ns())
