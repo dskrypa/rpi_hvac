@@ -102,54 +102,35 @@ class Dht22Sensor:
         return pulses (array uint16) contains alternating high and low transition times starting with a low transition
         time.  Normally pulses will have 81 elements for the DHT11/22 type devices.
         """
-        # pulses = array('H')
-        with DigitalInOut(self.sensor._pin) as dhtpin:
-            # we will bitbang if no pulsein capability
+        trig_wait = self.sensor._trig_wait / 1_000_000
+        with DigitalInOut(self.sensor._pin) as dht_pin:
             transitions = []
             # Signal by setting pin high, then low, and releasing
-            dhtpin.direction = Direction.OUTPUT
-            dhtpin.value = True
-            sleep(0.1)
-            dhtpin.value = False
-            # Using the time to pull-down the line according to DHT Model
-            sleep(self.sensor._trig_wait / 1_000_000)
-            timestamp = monotonic()  # take timestamp
-            dhtval = True  # start with dht pin true because its pulled up
-            dhtpin.direction = Direction.INPUT
+            dht_pin.direction = Direction.OUTPUT
 
+            dht_pin.value = True
+            sleep(0.1)
+
+            dht_pin.value = False
+            sleep(trig_wait)  # Using the time to pull-down the line according to DHT Model
+
+            dht_val = True  # start with dht pin true because its pulled up
+            timestamp = monotonic()
+            dht_pin.direction = Direction.INPUT
             try:
-                dhtpin.pull = Pull.UP
+                dht_pin.pull = Pull.UP
             except NotImplementedError:
                 # blinka.microcontroller.generic_linux.libgpiod_pin does not support internal pull resistors.
-                dhtpin.pull = None
+                dht_pin.pull = None
 
-            while monotonic() - timestamp < 0.25:
-                if dhtval != dhtpin.value:
-                    dhtval = not dhtval  # we toggled
+            # while monotonic() - timestamp < 0.25:
+            while monotonic() - timestamp < 0.3:
+                if dht_val != dht_pin.value:
+                    dht_val = not dht_val  # we toggled
                     transitions.append(monotonic())  # save the timestamp
 
-            if len(transitions) < 82:
-                log.warning(f'Measured {len(transitions)} (< 82) transitions')
-                extras = transitions.copy()
-                while len(extras) < 82:
-                    if dhtval != dhtpin.value:
-                        dhtval = not dhtval  # we toggled
-                        extras.append(monotonic())  # save the timestamp
-
-                log.debug(f'Additional measurements ({len(extras) - len(transitions)}): {extras[len(transitions):]}')
-                ex_pulses = transitions_to_pulses(extras)
-                log.debug(f'Extra pulses ({len(ex_pulses)}): {ex_pulses}')
-                ex_buf = pulses_to_binary(ex_pulses)
-                log.debug(f'Extra converted buffer ({len(ex_buf)}): {ex_buf}')
-
-            log.debug(f'Transitions ({len(transitions)}): {transitions}')
-            pulses = transitions_to_pulses(transitions)
-            # convert transitions to microsecond delta pulses - use last 81 pulses:
-            # transition_start = max(1, len(transitions) - self.sensor._max_pulses)
-            # log.debug(f'Converting transitions to pulses with {transition_start=}')
-            # for i in range(transition_start, len(transitions)):
-            #     pulses_micro_sec = int(1_000_000 * (transitions[i] - transitions[i - 1]))
-            #     pulses.append(min(pulses_micro_sec, 65535))
+        log.debug(f'Transitions ({len(transitions)}): {transitions}')
+        pulses = transitions_to_pulses(transitions)
         return pulses
 
     def read(self) -> tuple[float, float]:
