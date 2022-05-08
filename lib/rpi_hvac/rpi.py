@@ -8,6 +8,16 @@ import logging
 from array import array
 from time import sleep, monotonic
 
+try:
+    from itertools import pairwise
+except ImportError:  # added in 3.10
+    from itertools import tee
+
+    def pairwise(iterable):
+        a, b = tee(iterable)
+        next(b, None)
+        return zip(a, b)
+
 from adafruit_dht import DHT22
 from board import D4  # noqa
 from digitalio import DigitalInOut, Pull, Direction
@@ -52,18 +62,20 @@ class Dht22Sensor:
         self._last = monotonic()
         if len(pulses) < 10:  # Probably a connection issue
             raise SensorReadFailed('DHT sensor not found - check wiring')
-        elif len(pulses) < 80:  # We got *some* data just not 81 bits
-            raise SensorReadFailed(f'A full buffer was not returned - only received {len(pulses)} bits - try again')
+        # elif len(pulses) < 80:  # We got *some* data just not 81 bits
+        #     raise SensorReadFailed(f'A full buffer was not returned - only received {len(pulses)} bits - try again')
 
-        buf = array('B')
-        for byte_start in range(0, 80, 16):
-            # buf.append(self.sensor._pulses_to_binary(pulses, byte_start, byte_start + 16))
-            buf.append(self._pulses_to_binary(pulses, byte_start, byte_start + 16))
+        buf = pulses_to_binary(pulses)
+        if len(buf) < 5:
+            raise SensorReadFailed(f'A full buffer was not returned - only received {len(pulses)} bits - try again')
+        # buf = array('B')
+        # for byte_start in range(0, 80, 16):
+        #     buf.append(self.sensor._pulses_to_binary(pulses, byte_start, byte_start + 16))
 
         log.debug(f'Converted buffer ({len(buf)}): {buf}')
 
         if sum(buf[0:4]) & 0xFF != buf[4]:
-            raise SensorReadFailed('Checksum did not validate - try again')
+            raise SensorReadFailed(f'Checksum did not validate - try again (received {len(pulses)} pulses)')
 
         humidity = ((buf[0] << 8) | buf[1]) / 10
         # temperature is 2 bytes; MSB is sign, bits 0-14 are magnitude)
@@ -90,7 +102,7 @@ class Dht22Sensor:
         return pulses (array uint16) contains alternating high and low transition times starting with a low transition
         time.  Normally pulses will have 81 elements for the DHT11/22 type devices.
         """
-        pulses = array('H')
+        # pulses = array('H')
         with DigitalInOut(self.sensor._pin) as dhtpin:
             # we will bitbang if no pulsein capability
             transitions = []
@@ -116,43 +128,29 @@ class Dht22Sensor:
                     dhtval = not dhtval  # we toggled
                     transitions.append(monotonic())  # save the timestamp
 
+            if len(transitions) < 82:
+                log.warning(f'Measured {len(transitions)} (< 82) transitions')
+                extras = transitions.copy()
+                while len(extras) < 82:
+                    if dhtval != dhtpin.value:
+                        dhtval = not dhtval  # we toggled
+                        extras.append(monotonic())  # save the timestamp
+
+                log.debug(f'Additional measurements ({len(extras) - len(transitions)}): {extras[len(transitions):]}')
+                ex_pulses = transitions_to_pulses(extras)
+                log.debug(f'Extra pulses ({len(ex_pulses)}): {ex_pulses}')
+                ex_buf = pulses_to_binary(ex_pulses)
+                log.debug(f'Extra converted buffer ({len(ex_buf)}): {ex_buf}')
+
             log.debug(f'Transitions ({len(transitions)}): {transitions}')
-
+            pulses = transitions_to_pulses(transitions)
             # convert transitions to microsecond delta pulses - use last 81 pulses:
-            transition_start = max(1, len(transitions) - self.sensor._max_pulses)
-            log.debug(f'Converting transitions to pulses with {transition_start=}')
-            for i in range(transition_start, len(transitions)):
-                pulses_micro_sec = int(1_000_000 * (transitions[i] - transitions[i - 1]))
-                pulses.append(min(pulses_micro_sec, 65535))
+            # transition_start = max(1, len(transitions) - self.sensor._max_pulses)
+            # log.debug(f'Converting transitions to pulses with {transition_start=}')
+            # for i in range(transition_start, len(transitions)):
+            #     pulses_micro_sec = int(1_000_000 * (transitions[i] - transitions[i - 1]))
+            #     pulses.append(min(pulses_micro_sec, 65535))
         return pulses
-
-    def _pulses_to_binary(self, pulses: array, start: int, stop: int) -> int:
-        """
-        Takes pulses, a list of transition times, and converts them to a 1's or 0's.  The pulses array contains the
-        transition times. `pulses` starts with a low transition time followed by a high transition time, then a low
-        followed by a high, and so on.  The low transition times are ignored.  Only the high transition times are used.
-        If the high transition time is greater than __hiLevel, that counts as a bit=1, if the high transition time is
-        less that __hiLevel, that counts as a bit=0.
-
-        :param pulses: The pulses (transition times)
-        :param start: the starting index in pulses to start converting
-        :param stop: the index to convert up to, but not including
-        :return: integer containing the converted 1 and 0 bits
-        """
-        high_level = 51
-        binary = 0
-        hi_sig = False
-        for bit_idx in range(start, stop):
-            if hi_sig:
-                bit = 0
-                if pulses[bit_idx] > high_level:
-                    bit = 1
-                binary = binary << 1 | bit
-
-            hi_sig = not hi_sig
-
-        log.debug(f'Converted pulses[{start}:{stop}]={pulses[start:stop]} to {binary:b} ({binary})')
-        return binary
 
     def read(self) -> tuple[float, float]:
         if (retries := self.max_retries) < 0:
@@ -185,6 +183,23 @@ class Dht22Sensor:
                     if retries <= 0:
                         raise SensorReadFailed(f'Failed to read sensor - invalid values')
                 return sensor._humidity, sensor._temperature
+
+
+def pulses_to_binary(pulses: array) -> array:
+    return array('B', (pulse_to_binary(pulses[i:i + 16]) for i in range(0, 80, 16)))
+
+
+def pulse_to_binary(pulses: array) -> int:
+    b = 0
+    for pulse in pulses[1::2]:
+        b = b << 1 | (pulse > 51)
+    return b
+
+
+def transitions_to_pulses(transitions: list[float], max_pulses: int = 81) -> array:
+    start = max(0, len(transitions) - max_pulses - 1)
+    log.debug(f'Converting transitions to pulses with {start=}')
+    return array('H', (min(int(1_000_000 * (b - a)), 65535) for a, b in pairwise(transitions[start:])))
 
 
 class EnvSensor:
